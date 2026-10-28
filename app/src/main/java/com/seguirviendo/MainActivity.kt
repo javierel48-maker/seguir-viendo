@@ -21,8 +21,7 @@ class MainActivity : Activity() {
                 try {
                     if (email.text.isNotBlank()) s.authKey = Stremio.login(email.text.toString().trim(), pass.text.toString())
                     if (s.authKey == null) throw Exception("Falta iniciar sesión")
-                    Sync.run(this@MainActivity)
-                    say("Listo: ya está en Seguir viendo.")
+                    say(Sync.run(this@MainActivity))
                 } catch (e: Exception) { say("Error: ${e.message}") }
             }
         }
@@ -32,6 +31,6 @@ class MainActivity : Activity() {
         })
         WorkManager.getInstance(this).enqueueUniquePeriodicWork("sync", ExistingPeriodicWorkPolicy.KEEP,
             PeriodicWorkRequestBuilder<SyncWorker>(30, TimeUnit.MINUTES).build())
-        if (s.authKey != null) thread { runCatching { Sync.run(this@MainActivity) } }
+        if (s.authKey != null) thread { try { say(Sync.run(this@MainActivity)) } catch (e: Exception) { say("Error: ${e.message}") } }
     }
 }
