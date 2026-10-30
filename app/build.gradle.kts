@@ -3,7 +3,7 @@ android {
     namespace = "com.seguirviendo"
     signingConfigs { getByName("debug") { storeFile = file("debug.keystore"); storePassword = "android"; keyAlias = "androiddebugkey"; keyPassword = "android" } }
     compileSdk = 34
-    defaultConfig { applicationId = "com.seguirviendo"; minSdk = 26; targetSdk = 34; versionCode = 5; versionName = "1.4" }
+    defaultConfig { applicationId = "com.seguirviendo"; minSdk = 26; targetSdk = 34; versionCode = 6; versionName = "1.5" }
     compileOptions { sourceCompatibility = JavaVersion.VERSION_17; targetCompatibility = JavaVersion.VERSION_17 }
     kotlinOptions { jvmTarget = "17" }
 }

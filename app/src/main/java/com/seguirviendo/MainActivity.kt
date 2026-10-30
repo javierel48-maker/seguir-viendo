@@ -87,19 +87,20 @@ class MainActivity : Activity() {
 
     private fun render() {
         list.removeAllViews()
-        for (x in Sync.items) list.addView(card(x))
-        list.addView(tv(if (Sync.items.isEmpty()) "No hay nada a medias en Stremio por ahora."
+        for (e in Sync.entries) list.addView(card(e))
+        list.addView(tv(if (Sync.entries.isEmpty()) "No hay nada a medias en Stremio por ahora."
             else "OK abre en Stremio. Mantené OK apretado para quitar de la lista.", 14f, soft))
         list.getChildAt(0)?.requestFocus()
     }
 
-    private fun card(x: Item): View {
+    private fun card(e: Entry): View {
+        val x = e.item
         val row = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL; isFocusable = true; isClickable = true
             setPadding(dp(14), dp(14), dp(14), dp(14)); background = bg(false)
             layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply { bottomMargin = dp(12) }
             setOnFocusChangeListener { v, f -> v.background = bg(f) }
-            setOnClickListener { Sync.open(this@MainActivity, x) }
+            setOnClickListener { Sync.open(this@MainActivity, e) }
             setOnLongClickListener { Store(this@MainActivity).hide(x.id); sync("", ""); true }
         }
         val img = ImageView(this).apply {
@@ -111,7 +112,7 @@ class MainActivity : Activity() {
             orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER_VERTICAL
             setPadding(dp(16), 0, 0, 0); layoutParams = LinearLayout.LayoutParams(0, dp(120), 1f)
         }
-        col.addView(tv(x.name, 20f, 0xFFFFFFFF.toInt(), true))
+        col.addView(tv(e.label, 20f, 0xFFFFFFFF.toInt(), true))
         x.videoId?.split(":")?.takeIf { it.size >= 3 }?.let {
             col.addView(tv("Temporada ${it[1]} · Episodio ${it[2]}", 15f, 0xFFB8C4CE.toInt()))
         }
