@@ -3,7 +3,7 @@
     <uses-permission android:name="com.android.providers.tv.permission.WRITE_EPG_DATA"/>
     <uses-feature android:name="android.software.leanback" android:required="false"/>
     <uses-feature android:name="android.hardware.touchscreen" android:required="false"/>
-    <application android:label="Seguir viendo para Javi" android:icon="@drawable/banner" android:banner="@drawable/banner" android:theme="@android:style/Theme.DeviceDefault">
+    <application android:label="Seguir viendo para Javi" android:icon="@drawable/icon" android:banner="@drawable/banner" android:theme="@android:style/Theme.DeviceDefault">
         <activity android:name=".MainActivity" android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN"/>
@@ -11,6 +11,7 @@
                 <category android:name="android.intent.category.LAUNCHER"/>
             </intent-filter>
         </activity>
+        <activity android:name=".OpenActivity" android:exported="true" android:theme="@android:style/Theme.Translucent.NoTitleBar"/>
         <receiver android:name=".RemovedReceiver" android:exported="true">
             <intent-filter>
                 <action android:name="android.media.tv.action.WATCH_NEXT_PROGRAM_BROWSABLE_DISABLED"/>

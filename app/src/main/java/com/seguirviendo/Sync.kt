@@ -10,10 +10,16 @@ import androidx.tvprovider.media.tv.*
 object Sync {
     @Volatile var items: List<Item> = emptyList()
 
-    fun link(x: Item) = "stremio:///detail/${x.type}/${x.id}" + (x.videoId?.let { v -> "/$v" } ?: "")
+    fun url(t: String, i: String, v: String?): String {
+        val vid = v ?: if (t == "movie") i else ""
+        return if (vid.isEmpty()) "stremio:///detail/$t/$i" else "stremio:///detail/$t/$i/$vid?autoPlay=true"
+    }
+    fun cardIntent(c: Context, x: Item) = Intent(c, OpenActivity::class.java)
+        .putExtra("t", x.type).putExtra("i", x.id).putExtra("v", x.videoId)
 
-    fun open(c: Context, x: Item) {
-        try { c.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(link(x)))) }
+    fun open(c: Context, x: Item) = openLink(c, x.type, x.id, x.videoId)
+    fun openLink(c: Context, t: String, i: String, v: String?) {
+        try { c.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url(t, i, v))).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }
         catch (e: Exception) { c.packageManager.getLeanbackLaunchIntentForPackage("com.stremio.one")?.let { c.startActivity(it) } }
     }
 
@@ -58,7 +64,7 @@ object Sync {
                     .setType(if (x.type == "movie") TvContractCompat.PreviewPrograms.TYPE_MOVIE else TvContractCompat.PreviewPrograms.TYPE_CLIP)
                     .setTitle(x.name).setInternalProviderId(x.id).setWeight(1000 - i)
                     .setPosterArtAspectRatio(TvContractCompat.PreviewPrograms.ASPECT_RATIO_2_3)
-                    .setIntent(Intent(Intent.ACTION_VIEW, Uri.parse(link(x))))
+                    .setIntent(cardIntent(c, x))
                 if (parts != null && parts.size >= 3) b.setDescription("Temporada ${parts[1]} · Episodio ${parts[2]}")
                 x.poster?.let { p -> b.setPosterArtUri(Uri.parse(p)) }
                 if (c.contentResolver.insert(TvContractCompat.PreviewPrograms.CONTENT_URI, b.build().toContentValues()) != null) n++
@@ -76,7 +82,7 @@ object Sync {
                     .setLastEngagementTimeUtcMillis(x.last).setTitle(x.name).setInternalProviderId(x.id)
                     .setLastPlaybackPositionMillis(x.offset.toInt())
                     .setPosterArtAspectRatio(TvContractCompat.WatchNextPrograms.ASPECT_RATIO_2_3)
-                    .setIntent(Intent(Intent.ACTION_VIEW, Uri.parse(link(x))))
+                    .setIntent(cardIntent(c, x))
                 if (x.duration > 0) b.setDurationMillis(x.duration.toInt())
                 x.poster?.let { p -> b.setPosterArtUri(Uri.parse(p)) }
                 c.contentResolver.insert(TvContractCompat.WatchNextPrograms.CONTENT_URI, b.build().toContentValues())
