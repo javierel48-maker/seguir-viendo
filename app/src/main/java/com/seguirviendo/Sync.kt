@@ -26,7 +26,7 @@ object Sync {
     fun open(c: Context, e: Entry) = openLink(c, e.item.type, e.item.id, e.item.videoId, e.variant)
 
     fun openLink(c: Context, t: String, i: String, v: String?, variant: String) {
-        try { c.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url(t, i, v, variant))).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }
+        try { c.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url(t, i, v, variant))).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or (if (t == "movie") Intent.FLAG_ACTIVITY_CLEAR_TASK else 0))) }
         catch (e: Exception) { c.packageManager.getLeanbackLaunchIntentForPackage("com.stremio.one")?.let { c.startActivity(it) } }
     }
 
