@@ -13,6 +13,8 @@ class Store(c: Context) {
     var asked: Boolean
         get() = p.getBoolean("a", false)
         set(v) { p.edit().putBoolean("a", v).apply() }
+    fun detections(): JSONObject = JSONObject(p.getString("d", "{}")!!)
+    fun saveDetection(k: String, o: JSONObject) { p.edit().putString("d", detections().put(k, o).toString()).apply() }
     fun hidden(): JSONObject = JSONObject(p.getString("h", "{}")!!)
     fun hide(id: String) { p.edit().putString("h", hidden().put(id, System.currentTimeMillis()).toString()).apply() }
 }
