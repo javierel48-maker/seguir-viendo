@@ -6,7 +6,7 @@ class OpenActivity : Activity() {
     override fun onCreate(b: Bundle?) {
         super.onCreate(b)
         Sync.openLink(this, intent.getStringExtra("t") ?: "", intent.getStringExtra("i") ?: "",
-            intent.getStringExtra("v"), intent.getStringExtra("x") ?: "A")
+            intent.getStringExtra("v"), intent.getStringExtra("x") ?: "C")
         finish()
     }
 }

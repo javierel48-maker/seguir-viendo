@@ -8,21 +8,16 @@ import android.net.Uri
 import android.provider.BaseColumns
 import androidx.tvprovider.media.tv.*
 
-class Entry(val item: Item, val variant: String, val label: String)
+class Entry(val item: Item, val variant: String, val label: String, val rowTitle: String)
 
 object Sync {
     @Volatile var entries: List<Entry> = emptyList()
 
-    // A = ficha normal (como la v3). B/C/D = variantes con arranque automático (prueba).
+    // Enlace de Stremio con arranque automático (datos del episodio codificados)
     fun url(t: String, i: String, v: String?, variant: String): String {
         val base = "stremio:///detail/$t/$i"
         val vid = v ?: if (t == "movie") i else ""
-        return when (variant) {
-            "B" -> if (vid.isEmpty()) base else "$base/$vid?autoPlay=true"
-            "C" -> if (vid.isEmpty()) base else "$base/${vid.replace(":", "%3A")}?autoPlay=true"
-            "D" -> if (t == "movie") "$base?autoPlay=true" else if (v == null) base else "$base/$v?autoPlay=true"
-            else -> base + (v?.let { "/$it" } ?: "")
-        }
+        return if (vid.isEmpty()) base else "$base/${vid.replace(":", "%3A")}?autoPlay=true"
     }
 
     fun cardIntent(c: Context, e: Entry) = Intent(c, OpenActivity::class.java)
@@ -68,17 +63,13 @@ object Sync {
         val hid = s.hidden()
         val list = lib.items.filter { it.last > hid.optLong(it.id, -1) }
 
-        // Versión de prueba: una película y una serie se repiten con variantes A, B, C y D
-        val tests = HashSet<String>()
-        list.firstOrNull { it.type == "movie" }?.let { tests.add(it.id) }
-        list.firstOrNull { it.type != "movie" }?.let { tests.add(it.id) }
-        val es = ArrayList<Entry>()
-        for (x in list) {
-            if (x.id in tests) for (v in listOf("A", "B", "C", "D")) es.add(Entry(x, v, "${x.name} ($v)"))
-            else es.add(Entry(x, "A", x.name))
+        val es = list.map { x ->
+            val p = x.videoId?.split(":")
+            val ep = if (x.type != "movie" && p != null && p.size >= 3) " · T${p[1]} E${p[2]}" else ""
+            Entry(x, "C", "${x.name} (Stremio)", "${x.name}$ep (Stremio)")
         }
         entries = es
-        var msg = "Biblioteca: ${lib.total}. A medias: ${list.size}. Prueba: A = ficha normal, B = arranque automático, C = automático codificado, D = automático según tipo."
+        var msg = "Biblioteca: ${lib.total}. A medias: ${list.size}."
 
         try {
             val chId = channel(c, s)
@@ -92,7 +83,7 @@ object Sync {
                 val parts = x.videoId?.split(":")
                 val b = PreviewProgram.Builder().setChannelId(chId)
                     .setType(if (x.type == "movie") TvContractCompat.PreviewPrograms.TYPE_MOVIE else TvContractCompat.PreviewPrograms.TYPE_CLIP)
-                    .setTitle(e.label).setInternalProviderId(x.id).setWeight(1000 - i)
+                    .setTitle(e.rowTitle).setInternalProviderId(x.id).setWeight(1000 - i)
                     .setPosterArtAspectRatio(TvContractCompat.PreviewPrograms.ASPECT_RATIO_2_3)
                     .setIntent(cardIntent(c, e))
                 if (parts != null && parts.size >= 3) b.setDescription("Temporada ${parts[1]} · Episodio ${parts[2]}")
@@ -111,7 +102,7 @@ object Sync {
                     .setLastEngagementTimeUtcMillis(x.last).setTitle(x.name).setInternalProviderId(x.id)
                     .setLastPlaybackPositionMillis(x.offset.toInt())
                     .setPosterArtAspectRatio(TvContractCompat.WatchNextPrograms.ASPECT_RATIO_2_3)
-                    .setIntent(cardIntent(c, Entry(x, "A", x.name)))
+                    .setIntent(cardIntent(c, Entry(x, "C", x.name, x.name)))
                 if (x.duration > 0) b.setDurationMillis(x.duration.toInt())
                 x.poster?.let { p -> b.setPosterArtUri(Uri.parse(p)) }
                 c.contentResolver.insert(TvContractCompat.WatchNextPrograms.CONTENT_URI, b.build().toContentValues())
