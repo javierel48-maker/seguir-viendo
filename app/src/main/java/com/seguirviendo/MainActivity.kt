@@ -1,7 +1,5 @@
 package com.seguirviendo
 import android.app.Activity
-import android.content.Intent
-import androidx.core.app.NotificationManagerCompat
 import android.content.res.ColorStateList
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
@@ -21,7 +19,6 @@ import kotlin.concurrent.thread
 class MainActivity : Activity() {
     private lateinit var st: TextView
     private lateinit var list: LinearLayout
-    private lateinit var det: LinearLayout
     private lateinit var login: LinearLayout
     private lateinit var go: Button
     private val cache = HashMap<String, Bitmap>()
@@ -51,25 +48,19 @@ class MainActivity : Activity() {
         }
         st = tv(if (s.authKey != null) "Buscando tus series y películas..." else "Iniciá sesión en Stremio.", 14f, soft)
         list = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        det = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         login = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL; addView(email); addView(pass)
             visibility = if (s.authKey != null) View.GONE else View.VISIBLE
         }
         go = Button(this).apply { text = if (s.authKey != null) "Sincronizar ahora" else "Entrar y sincronizar" }
         val row = Button(this).apply { text = "Activar fila en el inicio" }
-        val perm = Button(this).apply { text = "Activar detección (prueba)" }
-        perm.setOnClickListener {
-            try { startActivity(Intent("android.settings.ACTION_NOTIFICATION_LISTENER_SETTINGS")) }
-            catch (e: Exception) { Toast.makeText(this, "Activalo en Configuración → Apps → Acceso especial de apps → Acceso a notificaciones", Toast.LENGTH_LONG).show() }
-        }
         go.setOnClickListener { sync(email.text.toString().trim(), pass.text.toString()) }
         row.setOnClickListener { Sync.askRow(this) }
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(48), dp(32), dp(48), dp(32))
             addView(tv("Seguir viendo para Javi", 30f, sky, true))
-            addView(st); addView(list); addView(det); addView(login); addView(go); addView(row); addView(perm)
+            addView(st); addView(list); addView(login); addView(go); addView(row)
         }
         setContentView(ScrollView(this).apply { setBackgroundColor(night); isFillViewport = true; addView(root) })
         WorkManager.getInstance(this).enqueueUniquePeriodicWork("sync", ExistingPeriodicWorkPolicy.UPDATE,
@@ -78,7 +69,6 @@ class MainActivity : Activity() {
 
     override fun onResume() {
         super.onResume()
-        renderDet()
         if (Store(this).authKey != null) sync("", "")
     }
 
@@ -136,26 +126,6 @@ class MainActivity : Activity() {
         }
         row.addView(img); row.addView(col)
         return row
-    }
-
-    private fun renderDet() {
-        det.removeAllViews()
-        val on = NotificationManagerCompat.getEnabledListenerPackages(this).contains(packageName)
-        det.addView(tv("Detección (prueba): " + if (on) "activada" else "desactivada. Tocá \"Activar detección\" abajo.", 14f, sky, true))
-        val d = Store(this).detections()
-        val keys = d.keys().asSequence().toList().sortedByDescending { d.getJSONObject(it).optLong("time") }
-        for (k in keys) {
-            val o = d.getJSONObject(k)
-            val t = o.optString("title").ifBlank { o.optString("dTitle") }
-            val a = o.optString("artist")
-            val name = (if (a.isNotBlank()) "$t – $a" else t).ifBlank { "(sin título)" } + " (" + o.optString("service") + ")"
-            det.addView(tv(name, 17f, 0xFFFFFFFF.toInt(), true))
-            val st2 = when (o.optInt("state")) { 3 -> "reproduciendo"; 2 -> "en pausa"; 1 -> "detenido"; else -> "otro" }
-            det.addView(tv("Estado: $st2. Minuto ${o.optLong("position") / 60000} de ${o.optLong("duration") / 60000}. " +
-                "Datos: título='${o.optString("title")}' autor='$a' álbum='${o.optString("album")}' " +
-                "pantalla='${o.optString("dTitle")}' / '${o.optString("dSub")}'", 12f, soft))
-        }
-        det.addView(tv(" ", 10f, soft))
     }
 
     private fun poster(u: String, img: ImageView) {

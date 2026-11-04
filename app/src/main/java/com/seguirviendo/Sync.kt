@@ -84,10 +84,10 @@ object Sync {
                 val b = PreviewProgram.Builder().setChannelId(chId)
                     .setType(if (x.type == "movie") TvContractCompat.PreviewPrograms.TYPE_MOVIE else TvContractCompat.PreviewPrograms.TYPE_CLIP)
                     .setTitle(e.rowTitle).setInternalProviderId(x.id).setWeight(1000 - i)
-                    .setPosterArtAspectRatio(TvContractCompat.PreviewPrograms.ASPECT_RATIO_2_3)
+                    .setPosterArtAspectRatio(TvContractCompat.PreviewPrograms.ASPECT_RATIO_16_9)
                     .setIntent(cardIntent(c, e))
                 if (parts != null && parts.size >= 3) b.setDescription("Temporada ${parts[1]} · Episodio ${parts[2]}")
-                x.poster?.let { p -> b.setPosterArtUri(Uri.parse(p)) }
+                x.poster?.let { p -> b.setPosterArtUri(Uri.parse("content://com.seguirviendo.posters/p.png?u=" + Uri.encode(p))) }
                 if (c.contentResolver.insert(TvContractCompat.PreviewPrograms.CONTENT_URI, b.build().toContentValues()) != null) n++
             }
             msg += " Fila propia: $n."

@@ -12,9 +12,7 @@
             </intent-filter>
         </activity>
         <activity android:name=".OpenActivity" android:exported="true" android:theme="@android:style/Theme.Translucent.NoTitleBar"/>
-        <service android:name=".MediaListener" android:exported="true" android:label="Seguir viendo para Javi" android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE">
-            <intent-filter><action android:name="android.service.notification.NotificationListenerService"/></intent-filter>
-        </service>
+        <provider android:name=".PosterProvider" android:authorities="com.seguirviendo.posters" android:exported="true"/>
         <receiver android:name=".RemovedReceiver" android:exported="true">
             <intent-filter>
                 <action android:name="android.media.tv.action.WATCH_NEXT_PROGRAM_BROWSABLE_DISABLED"/>
