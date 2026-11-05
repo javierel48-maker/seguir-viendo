@@ -25,9 +25,13 @@ object Sync {
 
     fun open(c: Context, e: Entry) = openLink(c, e.item.type, e.item.id, e.item.videoId, e.variant)
 
-    fun openLink(c: Context, t: String, i: String, v: String?, variant: String) {
-        try { c.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url(t, i, v, variant))).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or (if (t == "movie") Intent.FLAG_ACTIVITY_CLEAR_TASK else 0))) }
-        catch (e: Exception) { c.packageManager.getLeanbackLaunchIntentForPackage("com.stremio.one")?.let { c.startActivity(it) } }
+    fun openLink(c: Context, t: String, i: String, v: String?, variant: String, done: (() -> Unit)? = null) {
+        try { (c.getSystemService(Context.ACTIVITY_SERVICE) as android.app.ActivityManager).killBackgroundProcesses("com.stremio.one") } catch (e: Exception) { }
+        android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+            try { c.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url(t, i, v, variant))).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)) }
+            catch (e: Exception) { c.packageManager.getLeanbackLaunchIntentForPackage("com.stremio.one")?.let { c.startActivity(it) } }
+            done?.invoke()
+        }, 450)
     }
 
     fun askRow(a: Activity) {
@@ -49,7 +53,7 @@ object Sync {
     private fun channel(c: Context, s: Store): Long {
         if (s.channelId > 0) return s.channelId
         val bmp = Bitmap.createBitmap(160, 160, Bitmap.Config.ARGB_8888).apply { eraseColor(0xFF45B0E6.toInt()) }
-        val ch = PreviewChannel.Builder().setDisplayName("Seguir viendo para Javi")
+        val ch = PreviewChannel.Builder().setDisplayName("Seguir viendo (Javi Videoclub)")
             .setAppLinkIntent(Intent(c, MainActivity::class.java)).setLogo(bmp).build()
         val id = PreviewChannelHelper(c).publishDefaultChannel(ch)
         s.channelId = id

@@ -59,7 +59,7 @@ class MainActivity : Activity() {
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(48), dp(32), dp(48), dp(32))
-            addView(tv("Seguir viendo para Javi", 30f, sky, true))
+            addView(tv("Seguir viendo (Javi Videoclub)", 30f, sky, true))
             addView(st); addView(list); addView(login); addView(go); addView(row)
         }
         setContentView(ScrollView(this).apply { setBackgroundColor(night); isFillViewport = true; addView(root) })
