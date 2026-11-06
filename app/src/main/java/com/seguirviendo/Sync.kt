@@ -26,6 +26,8 @@ object Sync {
     fun open(c: Context, e: Entry) = openLink(c, e.item.type, e.item.id, e.item.videoId, e.variant)
 
     fun openLink(c: Context, t: String, i: String, v: String?, variant: String, done: (() -> Unit)? = null) {
+        val appCtx = c.applicationContext
+        Thread { try { touch(appCtx, i) } catch (e: Exception) { } }.start()
         try { (c.getSystemService(Context.ACTIVITY_SERVICE) as android.app.ActivityManager).killBackgroundProcesses("com.stremio.one") } catch (e: Exception) { }
         android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
             try { c.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url(t, i, v, variant))).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)) }
@@ -60,22 +62,18 @@ object Sync {
         return id
     }
 
-    fun run(c: Context): String {
-        val s = Store(c)
-        val key = s.authKey ?: return "Falta iniciar sesión"
-        val lib = Stremio.inProgress(key)
-        val hid = s.hidden()
-        val list = lib.items.filter { it.last > hid.optLong(it.id, -1) }
+    @Volatile var lastItems: List<Item> = emptyList()
 
-        val es = list.map { x ->
-            val p = x.videoId?.split(":")
-            val ep = if (x.type != "movie" && p != null && p.size >= 3) " · T${p[1]} E${p[2]}" else ""
-            Entry(x, "C", "${x.name} (Stremio)", "${x.name}$ep (Stremio)")
-        }
-        entries = es
-        var msg = "Biblioteca: ${lib.total}. A medias: ${list.size}."
+    private fun effective(s: Store, x: Item): Long = maxOf(x.last, s.opened().optLong(x.id, 0L))
 
-        try {
+    private fun toEntries(list: List<Item>): List<Entry> = list.map { x ->
+        val p = x.videoId?.split(":")
+        val ep = if (x.type != "movie" && p != null && p.size >= 3) " · T${p[1]} E${p[2]}" else ""
+        Entry(x, "C", "${x.name} (Stremio)", "${x.name}$ep (Stremio)")
+    }
+
+    private fun publishRow(c: Context, s: Store, es: List<Entry>): String {
+        return try {
             val chId = channel(c, s)
             logo(c, chId)
             c.contentResolver.query(TvContractCompat.buildPreviewProgramsUriForChannel(chId), arrayOf(BaseColumns._ID), null, null, null)?.use {
@@ -94,9 +92,32 @@ object Sync {
                 x.poster?.let { p -> b.setPosterArtUri(Uri.parse("content://com.seguirviendo.posters/p.png?v=12&u=" + Uri.encode(p))) }
                 if (c.contentResolver.insert(TvContractCompat.PreviewPrograms.CONTENT_URI, b.build().toContentValues()) != null) n++
             }
-            msg += " Fila propia: $n."
-        } catch (e: Exception) { msg += " Fila propia con error: ${e.message}." }
+            " Fila propia: $n."
+        } catch (e: Exception) { " Fila propia con error: ${e.message}." }
+    }
 
+    // Al abrir un título pasa al principio al instante (sin esperar a Stremio) y se actualiza la fila.
+    fun touch(c: Context, id: String) {
+        val s = Store(c)
+        s.markOpened(id)
+        if (lastItems.isEmpty()) { run(c); return }
+        val sorted = lastItems.sortedByDescending { effective(s, it) }
+        lastItems = sorted
+        val es = toEntries(sorted)
+        entries = es
+        publishRow(c, s, es)
+    }
+
+    fun run(c: Context): String {
+        val s = Store(c)
+        val key = s.authKey ?: return "Falta iniciar sesión"
+        val lib = Stremio.inProgress(key)
+        val hid = s.hidden()
+        val list = lib.items.filter { it.last > hid.optLong(it.id, -1) }.sortedByDescending { effective(s, it) }
+        lastItems = list
+        val es = toEntries(list)
+        entries = es
+        val msg = "Biblioteca: ${lib.total}. A medias: ${list.size}." + publishRow(c, s, es)
         try {
             c.contentResolver.delete(TvContractCompat.WatchNextPrograms.CONTENT_URI, null, null)
             for (x in list) {

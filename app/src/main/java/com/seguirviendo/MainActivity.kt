@@ -1,11 +1,11 @@
 package com.seguirviendo
 import android.app.Activity
 import android.app.AlertDialog
+import android.content.res.ColorStateList
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
-import android.content.res.ColorStateList
 import android.os.Bundle
 import android.text.InputType
 import android.text.SpannableString
@@ -13,6 +13,7 @@ import android.text.style.ForegroundColorSpan
 import android.text.style.StyleSpan
 import android.util.TypedValue
 import android.view.Gravity
+import android.view.KeyEvent
 import android.view.View
 import android.view.ViewGroup
 import android.widget.*
@@ -37,11 +38,14 @@ class MainActivity : Activity() {
     private lateinit var shelf: LinearLayout
     private lateinit var login: LinearLayout
     private lateinit var go: Button
+    private lateinit var btnSearch: Button
+    private lateinit var btnMore: Button
     private lateinit var info1: TextView
     private lateinit var info2: TextView
     private lateinit var info3: TextView
     private lateinit var bar: ProgressBar
     private var statusMsg = ""
+    private val covers = ArrayList<View>()
     private val cache = HashMap<String, Bitmap>()
 
     private fun dp(n: Int) = (n * resources.displayMetrics.density).toInt()
@@ -70,8 +74,8 @@ class MainActivity : Activity() {
             orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
             addView(tv(title, 22f, cream, false, true), LinearLayout.LayoutParams(0, WC, 1f))
         }
-        val btnSearch = Button(this).apply { text = "Buscar películas" }; neon(btnSearch, magenta)
-        val btnMore = Button(this).apply { text = "Más…" }; neon(btnMore, sky)
+        btnSearch = Button(this).apply { text = "Buscar películas" }; neon(btnSearch, magenta)
+        btnMore = Button(this).apply { text = "Más…" }; neon(btnMore, sky)
         btnSearch.setOnClickListener { Toast.makeText(this, "El buscador de películas llega en la próxima versión.", Toast.LENGTH_LONG).show() }
         btnMore.setOnClickListener {
             AlertDialog.Builder(this).setItems(arrayOf("Sincronizar ahora", "Activar fila en el inicio")) { _, w ->
@@ -81,7 +85,7 @@ class MainActivity : Activity() {
         header.addView(btnSearch, LinearLayout.LayoutParams(WC, WC).apply { rightMargin = dp(10) })
         header.addView(btnMore)
 
-        shelf = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; clipChildren = false; clipToPadding = false; setPadding(dp(10), 0, dp(10), dp(6)) }
+        shelf = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; clipChildren = false; clipToPadding = false; setPadding(dp(18), 0, dp(18), dp(10)) }
         val scroll = ScrollView(this).apply { setBackgroundColor(0xFFE3D2AC.toInt()); clipChildren = false; clipToPadding = false; addView(shelf) }
         shelfFrame = LinearLayout(this).apply {
             setBackgroundColor(0xFFCDB88C.toInt()); setPadding(dp(6), dp(6), dp(6), dp(6)); addView(scroll, LinearLayout.LayoutParams(MP, MP))
@@ -133,7 +137,35 @@ class MainActivity : Activity() {
 
     override fun onResume() {
         super.onResume()
-        if (Store(this).authKey != null) sync("", "")
+        if (Store(this).authKey != null) {
+            if (Sync.entries.isNotEmpty()) render()   // muestra ya el orden nuevo (lo último abierto, primero)
+            sync("", "")
+        }
+    }
+
+    // Navegación con el control: por posición exacta en la grilla, sin depender de la geometría de Android.
+    override fun dispatchKeyEvent(ev: KeyEvent): Boolean {
+        if (ev.action == KeyEvent.ACTION_DOWN && covers.isNotEmpty()) {
+            if (ev.keyCode == KeyEvent.KEYCODE_DPAD_DOWN && (btnSearch.isFocused || btnMore.isFocused)) { covers[0].requestFocus(); return true }
+            val cur = covers.indexOfFirst { it.isFocused }
+            if (cur >= 0) {
+                val n = covers.size
+                when (ev.keyCode) {
+                    KeyEvent.KEYCODE_DPAD_LEFT -> { covers[maxOf(cur - 1, 0)].requestFocus(); return true }
+                    KeyEvent.KEYCODE_DPAD_RIGHT -> { covers[minOf(cur + 1, n - 1)].requestFocus(); return true }
+                    KeyEvent.KEYCODE_DPAD_DOWN -> {
+                        val t = cur + COLS
+                        if (t < n) covers[t].requestFocus() else if (cur / COLS < (n - 1) / COLS) covers[n - 1].requestFocus()
+                        return true
+                    }
+                    KeyEvent.KEYCODE_DPAD_UP -> {
+                        if (cur >= COLS) covers[cur - COLS].requestFocus() else btnSearch.requestFocus()
+                        return true
+                    }
+                }
+            }
+        }
+        return super.dispatchKeyEvent(ev)
     }
 
     private fun sync(e: String, p: String) = thread {
@@ -157,39 +189,43 @@ class MainActivity : Activity() {
     }
 
     private fun render() {
-        shelf.removeAllViews()
+        shelf.removeAllViews(); covers.clear()
         val es = Sync.entries
         val rows = maxOf(3, (es.size + COLS - 1) / COLS)
-        val avail = resources.displayMetrics.widthPixels - dp(48 + 12 + 20 + 8)
+        val avail = resources.displayMetrics.widthPixels - dp(48 + 12 + 36 + 8)
         val gap = dp(8)
         val w = minOf(dp(100), (avail - gap * (COLS - 1)) / COLS)
         val h = (w * 1.45f).toInt()
-        var first: View? = null
         for (r in 0 until rows) {
             val row = LinearLayout(this).apply {
                 orientation = LinearLayout.HORIZONTAL; clipChildren = false; clipToPadding = false
-                gravity = Gravity.BOTTOM; setPadding(0, dp(12), 0, 0)
+                gravity = Gravity.BOTTOM or Gravity.START; setPadding(0, if (r == 0) dp(46) else dp(16), 0, 0)
             }
             for (c in 0 until COLS) {
                 val i = r * COLS + c
                 val lp = LinearLayout.LayoutParams(w, h).apply { rightMargin = if (c < COLS - 1) gap else 0 }
-                if (i < es.size) { val v = cover(es[i]); row.addView(v, lp); if (first == null) first = v }
+                if (i < es.size) { val v = cover(es[i], i, w, h); covers.add(v); row.addView(v, lp) }
                 else row.addView(View(this), lp)   // lugar vacío: no se dibuja ninguna caja
             }
             shelf.addView(row, LinearLayout.LayoutParams(MP, WC)); shelf.addView(ledge())
         }
-        if (es.isEmpty()) showEmpty() else first?.requestFocus()
+        if (es.isEmpty()) showEmpty() else covers.firstOrNull()?.requestFocus()
     }
 
     private fun coverBg(f: Boolean) = GradientDrawable().apply {
-        cornerRadius = dp(3).toFloat(); setColor(0xFF111111.toInt()); setStroke(dp(if (f) 3 else 1), if (f) sky else 0xFF1A1A1A.toInt())
+        cornerRadius = dp(3).toFloat(); setColor(0xFF111111.toInt()); setStroke(dp(if (f) 4 else 1), if (f) sky else 0xFF1A1A1A.toInt())
     }
 
-    private fun cover(e: Entry): View {
+    private fun select(i: Int) {
+        covers.forEachIndexed { j, v -> v.animate().alpha(if (j == i) 1f else 0.8f).setDuration(120).start() }
+    }
+
+    private fun cover(e: Entry, idx: Int, w: Int, h: Int): View {
         val x = e.item
         val box = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL; isFocusable = true; isClickable = true
             setPadding(dp(2), dp(2), dp(2), dp(2)); background = coverBg(false)
+            pivotX = w / 2f; pivotY = h.toFloat()   // crece hacia arriba, apoyada en la repisa
         }
         val area = FrameLayout(this).apply { setBackgroundColor(0xFF2A2F36.toInt()) }
         val img = ImageView(this).apply { scaleType = ImageView.ScaleType.CENTER_CROP }
@@ -200,8 +236,10 @@ class MainActivity : Activity() {
         box.addView(View(this).apply { setBackgroundColor(0xFFEEEEEE.toInt()) }, LinearLayout.LayoutParams(MP, dp(7)).apply { topMargin = dp(2) })
         box.setOnFocusChangeListener { v, f ->
             v.background = coverBg(f)
-            if (f) { v.bringToFront(); v.animate().scaleX(1.16f).scaleY(1.16f).setDuration(120).start(); showInfo(e) }
-            else v.animate().scaleX(1f).scaleY(1f).setDuration(120).start()
+            if (f) {
+                v.animate().scaleX(1.35f).scaleY(1.35f).translationY(-dp(8).toFloat()).translationZ(dp(12).toFloat()).setDuration(120).start()
+                select(idx); showInfo(e)
+            } else v.animate().scaleX(1f).scaleY(1f).translationY(0f).translationZ(0f).setDuration(120).start()
         }
         box.setOnClickListener { Sync.open(this, e) }
         box.setOnLongClickListener { Store(this).hide(x.id); sync("", ""); true }
