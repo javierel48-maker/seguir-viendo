@@ -21,10 +21,13 @@ class PosterProvider : ContentProvider() {
         val src = uri.getQueryParameter("u") ?: throw FileNotFoundException()
         if (!src.startsWith("https://") && !src.startsWith("http://")) throw FileNotFoundException()
         val ctx = context!!
-        val f = File(ctx.cacheDir, "pv11_" + src.hashCode() + ".png")
+        val f = File(ctx.cacheDir, "pv12_" + src.hashCode() + ".png")
         if (!f.exists()) {
             try {
-                val poster = URL(src).openStream().use { BitmapFactory.decodeStream(it) } ?: throw FileNotFoundException()
+                val conn = URL(src.replaceFirst("http://", "https://")).openConnection()
+                conn.connectTimeout = 10000
+                conn.readTimeout = 15000
+                val poster = conn.getInputStream().use { BitmapFactory.decodeStream(it) } ?: throw FileNotFoundException()
                 val bg = BitmapFactory.decodeResource(ctx.resources, R.drawable.cassette_card)
                 val out = Bitmap.createBitmap(640, 360, Bitmap.Config.ARGB_8888)
                 val c = Canvas(out)
