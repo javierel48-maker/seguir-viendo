@@ -5,11 +5,11 @@ import java.net.HttpURLConnection
 import java.net.URL
 
 object Tmdb {
-    class Hit(val id: Int, val title: String, val year: String, val tv: Boolean, val poster: String?)
+    class Hit(val id: Int, val title: String, val english: String, val year: String, val tv: Boolean, val poster: String?)
 
     fun search(key: String, q: String): List<Hit> {
         val bearer = key.length > 60
-        val u = "https://api.themoviedb.org/3/search/multi?language=es-ES&include_adult=false&query=" + Uri.encode(q) +
+        val u = "https://api.themoviedb.org/3/search/multi?language=en-US&include_adult=false&query=" + Uri.encode(q) +
             (if (bearer) "" else "&api_key=" + Uri.encode(key))
         val c = URL(u).openConnection() as HttpURLConnection
         c.connectTimeout = 10000; c.readTimeout = 15000
@@ -22,10 +22,12 @@ object Tmdb {
             val o = arr.getJSONObject(i)
             val mt = o.optString("media_type")
             if (mt != "movie" && mt != "tv") continue
-            val title = o.optString(if (mt == "movie") "title" else "name")
+            val eng = o.optString(if (mt == "movie") "title" else "name")
+            val orig = o.optString(if (mt == "movie") "original_title" else "original_name")
+            val title = if (orig.isBlank() || orig.any { it.isLetter() && it.code > 0x24F }) eng else orig
             val date = o.optString(if (mt == "movie") "release_date" else "first_air_date")
             val pp = o.optString("poster_path").takeIf { it.isNotBlank() && it != "null" }
-            out.add(Hit(o.getInt("id"), title, date.take(4), mt == "tv", pp?.let { "https://image.tmdb.org/t/p/w342$it" }))
+            out.add(Hit(o.getInt("id"), title, eng, date.take(4), mt == "tv", pp?.let { "https://image.tmdb.org/t/p/w342$it" }))
         }
         return out.take(12)
     }

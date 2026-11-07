@@ -41,6 +41,7 @@ class MainActivity : Activity() {
     private lateinit var login: LinearLayout
     private lateinit var go: Button
     private lateinit var btnSearch: Button
+    private lateinit var btnAdd: Button
     private lateinit var btnMore: Button
     private lateinit var info1: TextView
     private lateinit var info2: TextView
@@ -77,15 +78,18 @@ class MainActivity : Activity() {
             orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; clipChildren = false
             addView(tv(title, 22f, cream, false, true), LinearLayout.LayoutParams(0, WC, 1f))
         }
-        btnSearch = Button(this).apply { text = "Buscar películas" }; neon(btnSearch, magenta)
-        btnMore = Button(this).apply { text = "Más…" }; neon(btnMore, sky)
-        btnSearch.setOnClickListener { startSearch() }
+        btnSearch = Button(this).apply { text = "Buscar en Stremio" }; neon(btnSearch, magenta)
+        btnAdd = Button(this).apply { text = "Agregar manual" }; neon(btnAdd, sky)
+        btnMore = Button(this).apply { text = "Más…" }; neon(btnMore, orange)
+        btnSearch.setOnClickListener { Sync.openStremioSearch(this) }
+        btnAdd.setOnClickListener { startAdd() }
         btnMore.setOnClickListener {
             AlertDialog.Builder(this).setItems(arrayOf("Sincronizar ahora", "Activar fila en el inicio", "Clave de TMDB")) { _, w ->
                 when (w) { 0 -> sync("", ""); 1 -> Sync.askRow(this); else -> askKey { } }
             }.show()
         }
         header.addView(btnSearch, LinearLayout.LayoutParams(WC, WC).apply { rightMargin = dp(10) })
+        header.addView(btnAdd, LinearLayout.LayoutParams(WC, WC).apply { rightMargin = dp(10) })
         header.addView(btnMore)
 
         shelf = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; clipChildren = false; clipToPadding = false; setPadding(dp(18), 0, dp(18), dp(10)) }
@@ -154,7 +158,7 @@ class MainActivity : Activity() {
     // Navegación con el control: por posición exacta en la grilla, sin depender de la geometría de Android.
     override fun dispatchKeyEvent(ev: KeyEvent): Boolean {
         if (ev.action == KeyEvent.ACTION_DOWN && covers.isNotEmpty()) {
-            if (ev.keyCode == KeyEvent.KEYCODE_DPAD_DOWN && (btnSearch.isFocused || btnMore.isFocused)) { covers[0].requestFocus(); return true }
+            if (ev.keyCode == KeyEvent.KEYCODE_DPAD_DOWN && (btnSearch.isFocused || btnAdd.isFocused || btnMore.isFocused)) { covers[0].requestFocus(); return true }
             val cur = covers.indexOfFirst { it.isFocused }
             if (cur >= 0) {
                 val n = covers.size
@@ -264,29 +268,15 @@ class MainActivity : Activity() {
 
     private fun showMenu(e: Entry) {
         val manual = e.pkg != null
-        val items = if (manual) arrayOf("Marcar como vista", "Borrar de la estantería", "Salir") else arrayOf("Borrar de la estantería", "Salir")
-        AlertDialog.Builder(this).setTitle(e.item.name).setItems(items) { _, w ->
-            when (items[w]) {
-                "Marcar como vista" -> markSeen(e)
-                "Borrar de la estantería" -> {
-                    if (manual) { Store(this).removeManual(e.item.id); refreshLocal() }
-                    else { Store(this).hide(e.item.id); sync("", "") }
-                }
-                else -> { }   // Salir: no hace nada
-            }
+        AlertDialog.Builder(this).setTitle(e.item.name).setItems(arrayOf("Borrar de la estantería", "Salir")) { _, w ->
+            if (w == 0) {
+                if (manual) { Store(this).removeManual(e.item.id); refreshLocal() }
+                else { Store(this).hide(e.item.id); sync("", "") }
+            }   // "Salir": no hace nada
         }.show()
     }
 
-    private fun markSeen(e: Entry) {
-        val s = Store(this)
-        val p = e.item.videoId?.split(":")
-        if (e.item.type == "series" && p != null && p.size >= 3)
-            s.updateEpisode(e.item.id, p[1].toIntOrNull() ?: 1, (p[2].toIntOrNull() ?: 1) + 1)   // pasa al episodio siguiente
-        else s.removeManual(e.item.id)                                                              // película: sale de la estantería
-        refreshLocal()
-    }
-
-    // ---- Buscador (TMDB) y agregar a mano ----
+    // ---- Agregar a mano (búsqueda en TMDB por título original / inglés) ----
     private fun askKey(then: () -> Unit) {
         val input = EditText(this).apply { hint = "Clave de TMDB"; inputType = InputType.TYPE_CLASS_TEXT; setSingleLine() }
         AlertDialog.Builder(this).setTitle("Clave gratuita de TMDB (themoviedb.org → Ajustes → API)").setView(input)
@@ -294,11 +284,11 @@ class MainActivity : Activity() {
             .setNegativeButton("Cancelar", null).show()
     }
 
-    private fun startSearch() {
+    private fun startAdd() {
         val key = Store(this).tmdbKey
-        if (key.isNullOrBlank()) { askKey { startSearch() }; return }
-        val input = EditText(this).apply { hint = "Título (ej. Carrie)"; inputType = InputType.TYPE_CLASS_TEXT; setSingleLine() }
-        AlertDialog.Builder(this).setTitle("Buscar películas y series (datos: TMDB)").setView(input)
+        if (key.isNullOrBlank()) { askKey { startAdd() }; return }
+        val input = EditText(this).apply { hint = "Título original o en inglés (ej. Carrie)"; inputType = InputType.TYPE_CLASS_TEXT; setSingleLine() }
+        AlertDialog.Builder(this).setTitle("Agregar manual (datos: TMDB)").setView(input)
             .setPositiveButton("Buscar") { _, _ -> doSearch(key, input.text.toString().trim()) }
             .setNegativeButton("Salir", null).show()
     }
@@ -313,34 +303,46 @@ class MainActivity : Activity() {
 
     private fun showHits(h: List<Tmdb.Hit>) {
         if (h.isEmpty()) { Toast.makeText(this, "Sin resultados", Toast.LENGTH_LONG).show(); return }
-        val names = h.map { it.title + (if (it.year.isNotBlank()) " (${it.year})" else "") + " · " + (if (it.tv) "Serie" else "Película") }.toTypedArray()
+        val names = h.map {
+            it.title + (if (it.english.isNotBlank() && it.english != it.title) " / ${it.english}" else "") +
+                (if (it.year.isNotBlank()) " (${it.year})" else "") + " · " + (if (it.tv) "Serie" else "Película")
+        }.toTypedArray()
         AlertDialog.Builder(this).setTitle("¿Cuál es?").setItems(names) { _, i -> pickApp(h[i]) }.setNegativeButton("Salir", null).show()
     }
 
-    private fun pickApp(hit: Tmdb.Hit) {
+    private fun installedApps(): List<Pair<String, String>> {
         val pm = packageManager
         val q = Intent(Intent.ACTION_MAIN).addCategory("android.intent.category.LEANBACK_LAUNCHER")
-        val apps = pm.queryIntentActivities(q, 0).map { it.activityInfo.packageName to it.loadLabel(pm).toString() }
+        return pm.queryIntentActivities(q, 0).map { it.activityInfo.packageName to it.loadLabel(pm).toString() }
             .filter { it.first != packageName }.distinctBy { it.first }.sortedBy { it.second.lowercase() }
-        if (apps.isEmpty()) { Toast.makeText(this, "No encontré apps instaladas para elegir", Toast.LENGTH_LONG).show(); return }
-        AlertDialog.Builder(this).setTitle("¿Dónde la vas a ver?").setItems(apps.map { it.second }.toTypedArray()) { _, i ->
-            if (hit.tv) askEpisode(hit, apps[i]) else addManual(hit, apps[i], 1, 1)
+    }
+
+    // Opciones reducidas: Netflix, Flow, Disney+ y "Otra…"
+    private fun pickApp(hit: Tmdb.Hit) {
+        val installed = installedApps()
+        val names = ArrayList<String>(); val apps = ArrayList<Pair<String, String>?>()
+        for ((nm, kw) in listOf("Netflix" to "netflix", "Flow" to "flow", "Disney+" to "disney")) {
+            val a = installed.firstOrNull { it.second.lowercase().contains(kw) }
+            if (a != null) { names.add(nm); apps.add(a.first to nm) }
+        }
+        names.add("Otra…"); apps.add(null)
+        AlertDialog.Builder(this).setTitle("¿Dónde la vas a ver?").setItems(names.toTypedArray()) { _, i ->
+            val a = apps[i]
+            if (a != null) addManual(hit, a.first, a.second) else pickOther(hit, installed)
         }.setNegativeButton("Salir", null).show()
     }
 
-    private fun askEpisode(hit: Tmdb.Hit, app: Pair<String, String>) {
-        val se = EditText(this).apply { hint = "Temporada"; inputType = InputType.TYPE_CLASS_NUMBER; setText("1") }
-        val ep = EditText(this).apply { hint = "Episodio"; inputType = InputType.TYPE_CLASS_NUMBER; setText("1") }
-        val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(24), dp(8), dp(24), 0); addView(se); addView(ep) }
-        AlertDialog.Builder(this).setTitle("¿En qué episodio vas?").setView(box)
-            .setPositiveButton("Agregar") { _, _ -> addManual(hit, app, se.text.toString().toIntOrNull() ?: 1, ep.text.toString().toIntOrNull() ?: 1) }
-            .setNegativeButton("Salir", null).show()
+    private fun pickOther(hit: Tmdb.Hit, apps: List<Pair<String, String>>) {
+        if (apps.isEmpty()) { Toast.makeText(this, "No encontré apps instaladas para elegir", Toast.LENGTH_LONG).show(); return }
+        AlertDialog.Builder(this).setTitle("¿En qué app?").setItems(apps.map { it.second }.toTypedArray()) { _, i ->
+            addManual(hit, apps[i].first, apps[i].second)
+        }.setNegativeButton("Salir", null).show()
     }
 
-    private fun addManual(hit: Tmdb.Hit, app: Pair<String, String>, sN: Int, eN: Int) {
+    private fun addManual(hit: Tmdb.Hit, pkg: String, label: String) {
         Store(this).addManual(JSONObject().put("id", (if (hit.tv) "mt" else "mm") + hit.id).put("name", hit.title)
-            .put("type", if (hit.tv) "series" else "movie").put("poster", hit.poster ?: "").put("s", sN).put("e", eN)
-            .put("pkg", app.first).put("label", app.second).put("last", System.currentTimeMillis()))
+            .put("type", if (hit.tv) "series" else "movie").put("poster", hit.poster ?: "")
+            .put("pkg", pkg).put("label", label).put("last", System.currentTimeMillis()))
         refreshLocal()
     }
 
@@ -352,7 +354,7 @@ class MainActivity : Activity() {
         sp.setSpan(StyleSpan(Typeface.BOLD_ITALIC), x.name.length + 1, sp.length, 0)
         info1.text = sp
         val p = x.videoId?.split(":")?.takeIf { it.size >= 3 }
-        info2.text = if (x.type == "movie") "Película" else if (p != null) "Temporada ${p[1]} · Episodio ${p[2]}" else ""
+        info2.text = if (x.type == "movie") "Película" else if (p != null) "Temporada ${p[1]} · Episodio ${p[2]}" else "Serie"
         if (x.duration > 0) {
             bar.visibility = View.VISIBLE; bar.progress = (x.offset * 1000 / x.duration).toInt().coerceIn(0, 1000)
             info3.text = "Minuto ${x.offset / 60000} de ${x.duration / 60000}"

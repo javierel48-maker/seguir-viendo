@@ -40,6 +40,15 @@ object Sync {
         }, 450)
     }
 
+    // Abre el buscador de Stremio (cierra Stremio y lo abre de cero, como con los títulos).
+    fun openStremioSearch(c: Context) {
+        try { (c.getSystemService(Context.ACTIVITY_SERVICE) as android.app.ActivityManager).killBackgroundProcesses("com.stremio.one") } catch (e: Exception) { }
+        android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+            try { c.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("stremio:///search?search=")).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)) }
+            catch (e: Exception) { c.packageManager.getLeanbackLaunchIntentForPackage("com.stremio.one")?.let { c.startActivity(it) } }
+        }, 450)
+    }
+
     fun askRow(a: Activity) {
         val id = Store(a).channelId
         if (id > 0) try { TvContractCompat.requestChannelBrowsable(a, id) } catch (e: Exception) {}
@@ -72,9 +81,8 @@ object Sync {
         val a = s.manual(); val out = ArrayList<Item>()
         for (i in 0 until a.length()) {
             val o = a.getJSONObject(i)
-            val series = o.optString("type") == "series"
             out.add(Item(o.getString("id"), o.optString("name"), o.optString("type"), o.optString("poster").takeIf { it.isNotBlank() },
-                if (series) "m:${o.optInt("s", 1)}:${o.optInt("e", 1)}" else null, 0L, 0L, o.optLong("last")))
+                null, 0L, 0L, o.optLong("last")))
         }
         return out
     }
