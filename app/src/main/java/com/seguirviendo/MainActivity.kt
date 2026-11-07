@@ -1,6 +1,7 @@
 package com.seguirviendo
 import android.app.Activity
 import android.app.AlertDialog
+import android.content.Intent
 import android.content.res.ColorStateList
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
@@ -18,6 +19,7 @@ import android.view.View
 import android.view.ViewGroup
 import android.widget.*
 import androidx.work.*
+import org.json.JSONObject
 import java.net.URL
 import java.util.concurrent.TimeUnit
 import kotlin.concurrent.thread
@@ -45,6 +47,7 @@ class MainActivity : Activity() {
     private lateinit var info3: TextView
     private lateinit var bar: ProgressBar
     private var statusMsg = ""
+    private var sig = ""
     private val covers = ArrayList<View>()
     private val cache = HashMap<String, Bitmap>()
 
@@ -71,15 +74,15 @@ class MainActivity : Activity() {
             setSpan(ForegroundColorSpan(yellow), i, length, 0); setSpan(StyleSpan(Typeface.BOLD_ITALIC), i, length, 0)
         }
         val header = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
+            orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; clipChildren = false
             addView(tv(title, 22f, cream, false, true), LinearLayout.LayoutParams(0, WC, 1f))
         }
         btnSearch = Button(this).apply { text = "Buscar películas" }; neon(btnSearch, magenta)
         btnMore = Button(this).apply { text = "Más…" }; neon(btnMore, sky)
-        btnSearch.setOnClickListener { Toast.makeText(this, "El buscador de películas llega en la próxima versión.", Toast.LENGTH_LONG).show() }
+        btnSearch.setOnClickListener { startSearch() }
         btnMore.setOnClickListener {
-            AlertDialog.Builder(this).setItems(arrayOf("Sincronizar ahora", "Activar fila en el inicio")) { _, w ->
-                if (w == 0) sync("", "") else Sync.askRow(this)
+            AlertDialog.Builder(this).setItems(arrayOf("Sincronizar ahora", "Activar fila en el inicio", "Clave de TMDB")) { _, w ->
+                when (w) { 0 -> sync("", ""); 1 -> Sync.askRow(this); else -> askKey { } }
             }.show()
         }
         header.addView(btnSearch, LinearLayout.LayoutParams(WC, WC).apply { rightMargin = dp(10) })
@@ -88,6 +91,7 @@ class MainActivity : Activity() {
         shelf = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; clipChildren = false; clipToPadding = false; setPadding(dp(18), 0, dp(18), dp(10)) }
         val scroll = ScrollView(this).apply { setBackgroundColor(0xFFE3D2AC.toInt()); clipChildren = false; clipToPadding = false; addView(shelf) }
         shelfFrame = LinearLayout(this).apply {
+            clipChildren = false; clipToPadding = false
             setBackgroundColor(0xFFCDB88C.toInt()); setPadding(dp(6), dp(6), dp(6), dp(6)); addView(scroll, LinearLayout.LayoutParams(MP, MP))
         }
 
@@ -118,15 +122,18 @@ class MainActivity : Activity() {
         val wood = LinearLayout(this).apply { setBackgroundColor(0xFF8B5A2B.toInt()); setPadding(dp(6), dp(6), dp(6), dp(6)); addView(panel, LinearLayout.LayoutParams(MP, WC)) }
 
         val content = FrameLayout(this).apply {
+            clipChildren = false; clipToPadding = false
             addView(shelfFrame, FrameLayout.LayoutParams(MP, MP)); addView(login, FrameLayout.LayoutParams(MP, MP))
         }
         val hasKey = s.authKey != null
-        login.visibility = if (hasKey) View.GONE else View.VISIBLE
-        shelfFrame.visibility = if (hasKey) View.VISIBLE else View.GONE
+        val showShelf = hasKey || s.manual().length() > 0
+        login.visibility = if (showShelf) View.GONE else View.VISIBLE
+        shelfFrame.visibility = if (showShelf) View.VISIBLE else View.GONE
         info1.text = if (hasKey) "Buscando tus series y películas…" else ""
 
         setContentView(LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL; setBackgroundColor(night); setPadding(dp(24), dp(14), dp(24), dp(14))
+            clipChildren = false; clipToPadding = false
             addView(header, LinearLayout.LayoutParams(MP, WC).apply { bottomMargin = dp(8) })
             addView(content, LinearLayout.LayoutParams(MP, 0, 1f))
             addView(wood, LinearLayout.LayoutParams(MP, WC).apply { topMargin = dp(8) })
@@ -137,10 +144,11 @@ class MainActivity : Activity() {
 
     override fun onResume() {
         super.onResume()
-        if (Store(this).authKey != null) {
+        val s = Store(this)
+        if (s.authKey != null) {
             if (Sync.entries.isNotEmpty()) render()   // muestra ya el orden nuevo (lo último abierto, primero)
             sync("", "")
-        }
+        } else if (s.manual().length() > 0) refreshLocal()
     }
 
     // Navegación con el control: por posición exacta en la grilla, sin depender de la geometría de Android.
@@ -178,8 +186,13 @@ class MainActivity : Activity() {
         } catch (x: Exception) { runOnUiThread { statusMsg = "Error: ${x.message}"; if (Sync.entries.isEmpty()) showEmpty() } }
     }
 
+    // Cambios locales (agregar, borrar, marcar vista): reordena y actualiza sin red.
+    private fun refreshLocal() {
+        thread { Sync.rebuild(this); runOnUiThread { login.visibility = View.GONE; shelfFrame.visibility = View.VISIBLE; render() } }
+    }
+
     private fun showEmpty() {
-        info1.text = if (statusMsg.startsWith("Error")) statusMsg else "No hay nada a medias en Stremio por ahora."
+        info1.text = if (statusMsg.startsWith("Error")) statusMsg else "No hay nada a medias por ahora. Usá \"Buscar películas\" para agregar."
         info2.text = ""; info3.text = ""; bar.visibility = View.INVISIBLE
     }
 
@@ -189,8 +202,11 @@ class MainActivity : Activity() {
     }
 
     private fun render() {
-        shelf.removeAllViews(); covers.clear()
         val es = Sync.entries
+        val nsig = es.joinToString("|") { it.item.id + it.label + (it.item.videoId ?: "") }
+        if (nsig == sig && covers.isNotEmpty()) return   // nada cambió: no se rearma (evita el pestañeo)
+        sig = nsig
+        shelf.removeAllViews(); covers.clear()
         val rows = maxOf(3, (es.size + COLS - 1) / COLS)
         val avail = resources.displayMetrics.widthPixels - dp(48 + 12 + 36 + 8)
         val gap = dp(8)
@@ -199,7 +215,7 @@ class MainActivity : Activity() {
         for (r in 0 until rows) {
             val row = LinearLayout(this).apply {
                 orientation = LinearLayout.HORIZONTAL; clipChildren = false; clipToPadding = false
-                gravity = Gravity.BOTTOM or Gravity.START; setPadding(0, if (r == 0) dp(46) else dp(16), 0, 0)
+                gravity = Gravity.BOTTOM or Gravity.START; setPadding(0, if (r == 0) dp(22) else dp(16), 0, 0)
             }
             for (c in 0 until COLS) {
                 val i = r * COLS + c
@@ -242,8 +258,90 @@ class MainActivity : Activity() {
             } else v.animate().scaleX(1f).scaleY(1f).translationY(0f).translationZ(0f).setDuration(120).start()
         }
         box.setOnClickListener { Sync.open(this, e) }
-        box.setOnLongClickListener { Store(this).hide(x.id); sync("", ""); true }
+        box.setOnLongClickListener { showMenu(e); true }
         return box
+    }
+
+    private fun showMenu(e: Entry) {
+        val manual = e.pkg != null
+        val items = if (manual) arrayOf("Marcar como vista", "Borrar de la estantería", "Salir") else arrayOf("Borrar de la estantería", "Salir")
+        AlertDialog.Builder(this).setTitle(e.item.name).setItems(items) { _, w ->
+            when (items[w]) {
+                "Marcar como vista" -> markSeen(e)
+                "Borrar de la estantería" -> {
+                    if (manual) { Store(this).removeManual(e.item.id); refreshLocal() }
+                    else { Store(this).hide(e.item.id); sync("", "") }
+                }
+                else -> { }   // Salir: no hace nada
+            }
+        }.show()
+    }
+
+    private fun markSeen(e: Entry) {
+        val s = Store(this)
+        val p = e.item.videoId?.split(":")
+        if (e.item.type == "series" && p != null && p.size >= 3)
+            s.updateEpisode(e.item.id, p[1].toIntOrNull() ?: 1, (p[2].toIntOrNull() ?: 1) + 1)   // pasa al episodio siguiente
+        else s.removeManual(e.item.id)                                                              // película: sale de la estantería
+        refreshLocal()
+    }
+
+    // ---- Buscador (TMDB) y agregar a mano ----
+    private fun askKey(then: () -> Unit) {
+        val input = EditText(this).apply { hint = "Clave de TMDB"; inputType = InputType.TYPE_CLASS_TEXT; setSingleLine() }
+        AlertDialog.Builder(this).setTitle("Clave gratuita de TMDB (themoviedb.org → Ajustes → API)").setView(input)
+            .setPositiveButton("Guardar") { _, _ -> Store(this).tmdbKey = input.text.toString().trim(); then() }
+            .setNegativeButton("Cancelar", null).show()
+    }
+
+    private fun startSearch() {
+        val key = Store(this).tmdbKey
+        if (key.isNullOrBlank()) { askKey { startSearch() }; return }
+        val input = EditText(this).apply { hint = "Título (ej. Carrie)"; inputType = InputType.TYPE_CLASS_TEXT; setSingleLine() }
+        AlertDialog.Builder(this).setTitle("Buscar películas y series (datos: TMDB)").setView(input)
+            .setPositiveButton("Buscar") { _, _ -> doSearch(key, input.text.toString().trim()) }
+            .setNegativeButton("Salir", null).show()
+    }
+
+    private fun doSearch(key: String, q: String) {
+        if (q.isBlank()) return
+        thread {
+            try { val hits = Tmdb.search(key, q); runOnUiThread { showHits(hits) } }
+            catch (e: Exception) { runOnUiThread { Toast.makeText(this, "Error: ${e.message}", Toast.LENGTH_LONG).show() } }
+        }
+    }
+
+    private fun showHits(h: List<Tmdb.Hit>) {
+        if (h.isEmpty()) { Toast.makeText(this, "Sin resultados", Toast.LENGTH_LONG).show(); return }
+        val names = h.map { it.title + (if (it.year.isNotBlank()) " (${it.year})" else "") + " · " + (if (it.tv) "Serie" else "Película") }.toTypedArray()
+        AlertDialog.Builder(this).setTitle("¿Cuál es?").setItems(names) { _, i -> pickApp(h[i]) }.setNegativeButton("Salir", null).show()
+    }
+
+    private fun pickApp(hit: Tmdb.Hit) {
+        val pm = packageManager
+        val q = Intent(Intent.ACTION_MAIN).addCategory("android.intent.category.LEANBACK_LAUNCHER")
+        val apps = pm.queryIntentActivities(q, 0).map { it.activityInfo.packageName to it.loadLabel(pm).toString() }
+            .filter { it.first != packageName }.distinctBy { it.first }.sortedBy { it.second.lowercase() }
+        if (apps.isEmpty()) { Toast.makeText(this, "No encontré apps instaladas para elegir", Toast.LENGTH_LONG).show(); return }
+        AlertDialog.Builder(this).setTitle("¿Dónde la vas a ver?").setItems(apps.map { it.second }.toTypedArray()) { _, i ->
+            if (hit.tv) askEpisode(hit, apps[i]) else addManual(hit, apps[i], 1, 1)
+        }.setNegativeButton("Salir", null).show()
+    }
+
+    private fun askEpisode(hit: Tmdb.Hit, app: Pair<String, String>) {
+        val se = EditText(this).apply { hint = "Temporada"; inputType = InputType.TYPE_CLASS_NUMBER; setText("1") }
+        val ep = EditText(this).apply { hint = "Episodio"; inputType = InputType.TYPE_CLASS_NUMBER; setText("1") }
+        val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(24), dp(8), dp(24), 0); addView(se); addView(ep) }
+        AlertDialog.Builder(this).setTitle("¿En qué episodio vas?").setView(box)
+            .setPositiveButton("Agregar") { _, _ -> addManual(hit, app, se.text.toString().toIntOrNull() ?: 1, ep.text.toString().toIntOrNull() ?: 1) }
+            .setNegativeButton("Salir", null).show()
+    }
+
+    private fun addManual(hit: Tmdb.Hit, app: Pair<String, String>, sN: Int, eN: Int) {
+        Store(this).addManual(JSONObject().put("id", (if (hit.tv) "mt" else "mm") + hit.id).put("name", hit.title)
+            .put("type", if (hit.tv) "series" else "movie").put("poster", hit.poster ?: "").put("s", sN).put("e", eN)
+            .put("pkg", app.first).put("label", app.second).put("last", System.currentTimeMillis()))
+        refreshLocal()
     }
 
     private fun showInfo(e: Entry) {
