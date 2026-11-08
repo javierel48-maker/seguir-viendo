@@ -41,6 +41,6 @@ object Stremio {
                 st.optString("video_id").takeIf { it.isNotBlank() },
                 off, st.optLong("duration"), last))
         }
-        return Lib(arr.length(), out.sortedByDescending { it.last }.take(10))
+        return Lib(arr.length(), out.sortedByDescending { it.last }.take(450))
     }
 }

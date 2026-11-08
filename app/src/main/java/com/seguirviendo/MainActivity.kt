@@ -26,6 +26,8 @@ import kotlin.concurrent.thread
 
 class MainActivity : Activity() {
     private val COLS = 9
+    private val MAX = 9 * 50   // 50 estantes de 9 cajas
+    private val pool = java.util.concurrent.Executors.newFixedThreadPool(4)
     private val sky = 0xFF19E3FF.toInt()
     private val night = 0xFF0B1B4D.toInt()
     private val cream = 0xFFEAF6FF.toInt()
@@ -284,7 +286,16 @@ class MainActivity : Activity() {
             .setNegativeButton("Cancelar", null).show()
     }
 
+    private fun lleno(): Boolean {
+        if (Sync.entries.size < MAX) return false
+        AlertDialog.Builder(this).setTitle("La estantería está llena")
+            .setMessage("No puedo agregar más: ya hay $MAX cajas (50 estantes). Borrá alguna (mantené OK sobre una caja) y probá de nuevo.")
+            .setPositiveButton("Entendido", null).show()
+        return true
+    }
+
     private fun startAdd() {
+        if (lleno()) return
         val key = Store(this).tmdbKey
         if (key.isNullOrBlank()) { askKey { startAdd() }; return }
         val input = EditText(this).apply { hint = "Título original o en inglés (ej. Carrie)"; inputType = InputType.TYPE_CLASS_TEXT; setSingleLine() }
@@ -340,6 +351,7 @@ class MainActivity : Activity() {
     }
 
     private fun addManual(hit: Tmdb.Hit, pkg: String, label: String) {
+        if (lleno()) return
         Store(this).addManual(JSONObject().put("id", (if (hit.tv) "mt" else "mm") + hit.id).put("name", hit.title)
             .put("type", if (hit.tv) "series" else "movie").put("poster", hit.poster ?: "")
             .put("pkg", pkg).put("label", label).put("last", System.currentTimeMillis()))
@@ -363,9 +375,10 @@ class MainActivity : Activity() {
 
     private fun poster(u: String, img: ImageView) {
         cache[u]?.let { img.setImageBitmap(it); return }
-        thread {
+        pool.execute {
             try {
-                val bmp = URL(u.replaceFirst("http://", "https://")).openStream().use { BitmapFactory.decodeStream(it) }
+                val opts = BitmapFactory.Options().apply { inSampleSize = 2 }   // a mitad de tamaño: con 450 cajas cuida la memoria
+                val bmp = URL(u.replaceFirst("http://", "https://")).openStream().use { BitmapFactory.decodeStream(it, null, opts) }
                 if (bmp != null) runOnUiThread { cache[u] = bmp; img.setImageBitmap(bmp) }
             } catch (e: Exception) { }
         }

@@ -91,6 +91,7 @@ object Sync {
         val meta = HashMap<String, Pair<String, String>>()
         val a = s.manual()
         for (i in 0 until a.length()) { val o = a.getJSONObject(i); meta[o.getString("id")] = o.optString("pkg") to o.optString("label") }
+        if (lastItems.isEmpty()) lastItems = s.loadItems()
         val all = (lastItems + manualItems(s)).sortedByDescending { effective(s, it) }
         return all.map { x ->
             val p = x.videoId?.split(":")
@@ -109,7 +110,7 @@ object Sync {
                 while (it.moveToNext()) c.contentResolver.delete(TvContractCompat.buildPreviewProgramUri(it.getLong(0)), null, null)
             }
             var n = 0
-            es.forEachIndexed { i, e ->
+            es.take(50).forEachIndexed { i, e ->
                 val x = e.item
                 val parts = x.videoId?.split(":")
                 val b = PreviewProgram.Builder().setChannelId(chId)
@@ -137,6 +138,7 @@ object Sync {
     fun touch(c: Context, id: String) {
         val s = Store(c)
         s.markOpened(id)
+        if (lastItems.isEmpty()) lastItems = s.loadItems()
         if (lastItems.isEmpty() && s.authKey != null) { try { run(c) } catch (e: Exception) { rebuild(c) }; return }
         rebuild(c)
     }
@@ -148,12 +150,13 @@ object Sync {
         val hid = s.hidden()
         val list = lib.items.filter { it.last > hid.optLong(it.id, -1) }
         lastItems = list
+        s.saveItems(list)
         val es = buildEntries(s)
         entries = es
         val msg = "Biblioteca: ${lib.total}. A medias: ${list.size}." + publishRow(c, s, es)
         try {
             c.contentResolver.delete(TvContractCompat.WatchNextPrograms.CONTENT_URI, null, null)
-            for (x in list) {
+            for (x in list.take(20)) {
                 val b = WatchNextProgram.Builder()
                     .setType(if (x.type == "movie") TvContractCompat.WatchNextPrograms.TYPE_MOVIE else TvContractCompat.WatchNextPrograms.TYPE_CLIP)
                     .setWatchNextType(TvContractCompat.WatchNextPrograms.WATCH_NEXT_TYPE_CONTINUE)

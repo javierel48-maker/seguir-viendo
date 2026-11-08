@@ -19,6 +19,24 @@ class Store(c: Context) {
     var tmdbKey: String?
         get() = p.getString("tk", null)
         set(v) { p.edit().putString("tk", v).apply() }
+    fun saveItems(list: List<Item>) {
+        val a = JSONArray()
+        for (x in list) a.put(JSONObject().put("id", x.id).put("name", x.name).put("type", x.type).put("poster", x.poster ?: "")
+            .put("video", x.videoId ?: "").put("off", x.offset).put("dur", x.duration).put("last", x.last))
+        p.edit().putString("li", a.toString()).apply()
+    }
+    fun loadItems(): List<Item> {
+        val out = ArrayList<Item>()
+        try {
+            val a = JSONArray(p.getString("li", "[]")!!)
+            for (i in 0 until a.length()) {
+                val o = a.getJSONObject(i)
+                out.add(Item(o.getString("id"), o.optString("name"), o.optString("type"), o.optString("poster").takeIf { it.isNotBlank() },
+                    o.optString("video").takeIf { it.isNotBlank() }, o.optLong("off"), o.optLong("dur"), o.optLong("last")))
+            }
+        } catch (e: Exception) { }
+        return out
+    }
     fun manual(): JSONArray = JSONArray(p.getString("m", "[]")!!)
     private fun saveManual(a: JSONArray) { p.edit().putString("m", a.toString()).apply() }
     fun addManual(o: JSONObject) {
