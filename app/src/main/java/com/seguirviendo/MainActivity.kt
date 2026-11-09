@@ -41,6 +41,9 @@ class MainActivity : Activity() {
     private val WC = ViewGroup.LayoutParams.WRAP_CONTENT
 
     private lateinit var shelfFrame: LinearLayout
+    private lateinit var scroll: ScrollView
+    private val ledges = ArrayList<View>()
+    private var selIdx = -1
     private lateinit var shelf: LinearLayout
     private lateinit var login: LinearLayout
     private lateinit var go: Button
@@ -99,7 +102,8 @@ class MainActivity : Activity() {
         header.addView(btnMore)
 
         shelf = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; clipChildren = false; clipToPadding = false; setPadding(dp(18), 0, dp(18), dp(10)) }
-        val scroll = ScrollView(this).apply { setBackgroundColor(0xFFE3D2AC.toInt()); clipChildren = false; clipToPadding = false; addView(shelf) }
+        scroll = ScrollView(this).apply { setBackgroundColor(0xFFE3D2AC.toInt()); clipChildren = false; clipToPadding = false; addView(shelf) }
+        scroll.setOnScrollChangeListener { _, _, _, _, _ -> updateClip() }
         shelfFrame = LinearLayout(this).apply {
             clipChildren = false; clipToPadding = false
             setBackgroundColor(0xFFCDB88C.toInt()); setPadding(dp(6), dp(6), dp(6), dp(6)); addView(scroll, LinearLayout.LayoutParams(MP, MP))
@@ -217,7 +221,7 @@ class MainActivity : Activity() {
         val nsig = es.joinToString("|") { it.item.id + it.label + (it.item.videoId ?: "") }
         if (nsig == sig && covers.isNotEmpty()) return   // nada cambió: no se rearma (evita el pestañeo)
         sig = nsig
-        shelf.removeAllViews(); covers.clear()
+        shelf.removeAllViews(); covers.clear(); ledges.clear(); selIdx = -1
         val rows = maxOf(3, (es.size + COLS - 1) / COLS)
         val avail = resources.displayMetrics.widthPixels - dp(48 + 12 + 36 + 8)
         val gap = dp(8)
@@ -234,17 +238,26 @@ class MainActivity : Activity() {
                 if (i < es.size) { val v = cover(es[i], i, w, h); covers.add(v); row.addView(v, lp) }
                 else row.addView(View(this), lp)   // lugar vacío: no se dibuja ninguna caja
             }
-            shelf.addView(row, LinearLayout.LayoutParams(MP, WC)); shelf.addView(ledge())
+            shelf.addView(row, LinearLayout.LayoutParams(MP, WC)); val lg = ledge(); ledges.add(lg); shelf.addView(lg)
         }
         if (es.isEmpty()) showEmpty() else covers.firstOrNull()?.requestFocus()
+        shelf.post { updateClip() }
     }
 
     private fun coverBg(f: Boolean) = GradientDrawable().apply {
         cornerRadius = dp(3).toFloat(); setColor(0xFF111111.toInt()); setStroke(dp(if (f) 4 else 1), if (f) sky else 0xFF1A1A1A.toInt())
     }
 
-    private fun select(i: Int) {
-        covers.forEachIndexed { j, v -> v.animate().alpha(if (j == i) 1f else 0.8f).setDuration(120).start() }
+    private fun select(i: Int) { selIdx = i; updateClip() }
+
+    // Lo que sube y se sale por arriba de la estantería no se dibuja; solo la caja elegida puede sobresalir.
+    private fun updateClip() {
+        val top = scroll.scrollY
+        covers.forEachIndexed { j, v ->
+            val y = (v.parent as View).top + v.top
+            v.alpha = if (j == selIdx || selIdx < 0 && y >= top) 1f else if (y >= top) 0.8f else 0f
+        }
+        for (l in ledges) l.alpha = if (l.top >= top) 1f else 0f
     }
 
     private fun cover(e: Entry, idx: Int, w: Int, h: Int): View {
