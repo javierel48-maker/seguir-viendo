@@ -53,7 +53,7 @@ object Tmdb {
         val first = str(j, "first_air_date").take(4)
         val last = str(j, "last_air_date").take(4)
         val going = str(j, "status") == "Returning Series" || j.optBoolean("in_production")
-        val yr = if (first.isBlank()) "" else if (going) "$first-" else if (last.isBlank() || last == first) first else "$first-$last"
+        val yr = if (first.isBlank()) "" else if (going || last.isBlank() || last == first) first else "$first-$last"
         val vals = ArrayList<Int>()
         j.optJSONArray("episode_run_time")?.let { a -> for (i in 0 until a.length()) if (a.getInt(i) > 0) vals.add(a.getInt(i)) }
         if (vals.isEmpty()) {
@@ -65,5 +65,12 @@ object Tmdb {
         if (vals.isEmpty()) { val r = j.optJSONObject("last_episode_to_air")?.optInt("runtime", 0) ?: 0; if (r > 0) vals.add(r) }
         val rt = vals.groupingBy { it }.eachCount().maxByOrNull { it.value }?.key ?: 0
         return Info(rt, yr)
+    }
+
+    // Año (o período) de un título de Stremio a partir de su código de IMDb. "" = TMDB no lo tiene.
+    fun yearForImdb(key: String, imdb: String, tv: Boolean): String {
+        val j = getJson(key, "/find/$imdb?external_source=imdb_id")
+        val o = j.optJSONArray(if (tv) "tv_results" else "movie_results")?.optJSONObject(0) ?: return ""
+        return info(key, o.getInt("id"), tv).year
     }
 }

@@ -37,6 +37,8 @@ class Store(c: Context) {
         } catch (e: Exception) { }
         return out
     }
+    fun yearCache(id: String): String? = JSONObject(p.getString("ym", "{}")!!).let { if (it.has(id)) it.getString(id) else null }
+    fun setYearCache(id: String, y: String) { p.edit().putString("ym", JSONObject(p.getString("ym", "{}")!!).put(id, y).toString()).apply() }
     fun manual(): JSONArray = JSONArray(p.getString("m", "[]")!!)
     private fun saveManual(a: JSONArray) { p.edit().putString("m", a.toString()).apply() }
     fun addManual(o: JSONObject) {

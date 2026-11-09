@@ -74,9 +74,11 @@ class MainActivity : Activity() {
     override fun onCreate(b: Bundle?) {
         super.onCreate(b)
         val s = Store(this)
-        val title = SpannableString("Seguir viendo (Javi Videoclub)").apply {
-            val i = indexOf("(Javi")
-            setSpan(ForegroundColorSpan(yellow), i, length, 0); setSpan(StyleSpan(Typeface.BOLD_ITALIC), i, length, 0)
+        val ver = try { packageManager.getPackageInfo(packageName, 0).versionName ?: "" } catch (e: Exception) { "" }
+        val title = SpannableString("Seguir viendo (Javi Videoclub) $ver").apply {
+            val i = indexOf("(Javi"); val j = indexOf(")") + 1
+            setSpan(ForegroundColorSpan(yellow), i, j, 0); setSpan(StyleSpan(Typeface.BOLD_ITALIC), i, j, 0)
+            if (ver.isNotEmpty()) setSpan(ForegroundColorSpan(sky), j + 1, length, 0)
         }
         val header = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; clipChildren = false
@@ -388,7 +390,7 @@ class MainActivity : Activity() {
     private fun showInfo(e: Entry) {
         val x = e.item
         val svc = e.label.removePrefix(x.name).trim()
-        val yr = if (x.year.isNotBlank()) " - ${x.year}" else ""
+        val yr = Sync.fmtYear(x.year).let { if (it.isEmpty()) "" else " $it" }
         val sp = SpannableString(x.name + yr + " " + svc)
         if (yr.isNotEmpty()) sp.setSpan(ForegroundColorSpan(sky), x.name.length, x.name.length + yr.length, 0)
         sp.setSpan(ForegroundColorSpan(yellow), x.name.length + yr.length + 1, sp.length, 0)

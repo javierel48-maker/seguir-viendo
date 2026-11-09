@@ -14,6 +14,12 @@ object Sync {
     @Volatile var entries: List<Entry> = emptyList()
     @Volatile var lastItems: List<Item> = emptyList()   // lo que viene de Stremio
 
+    // "(1976)" o "(1959-1964)": sin guiones sueltos al principio ni al final.
+    fun fmtYear(y: String): String {
+        val t = y.replace('–', '-').replace('—', '-').trim().trim('-').trim()
+        return if (t.isEmpty()) "" else "($t)"
+    }
+
     fun url(t: String, i: String, v: String?, variant: String): String {
         val base = "stremio:///detail/$t/$i"
         val vid = v ?: if (t == "movie") i else ""
@@ -99,7 +105,7 @@ object Sync {
             val ep = if (x.type != "movie" && p != null && p.size >= 3) " · T${p[1]} E${p[2]}" else ""
             val m = meta[x.id]
             val svc = m?.second ?: "Stremio"
-            val yr = if (x.year.isNotBlank()) " - ${x.year}" else ""
+            val yr = fmtYear(x.year).let { if (it.isEmpty()) "" else " $it" }
             Entry(x, "C", "${x.name} ($svc)", "${x.name}$yr$ep ($svc)", m?.first)
         }
     }
@@ -150,7 +156,20 @@ object Sync {
         val key = s.authKey ?: return "Falta iniciar sesión"
         val lib = Stremio.inProgress(key)
         val hid = s.hidden()
-        val list = lib.items.filter { it.last > hid.optLong(it.id, -1) }
+        val tk = s.tmdbKey
+        var pedidos = 0
+        val list = lib.items.filter { it.last > hid.optLong(it.id, -1) }.map { x ->
+            if (x.year.isNotBlank() || !x.id.startsWith("tt")) x
+            else {   // sin año en Stremio: se completa desde TMDB (y se recuerda)
+                var y = s.yearCache(x.id)
+                if (y == null && !tk.isNullOrBlank() && pedidos < 25) {
+                    pedidos++
+                    y = try { Tmdb.yearForImdb(tk, x.id, x.type != "movie") } catch (e: Exception) { null }
+                    if (y != null) s.setYearCache(x.id, y)
+                }
+                if (y.isNullOrBlank()) x else Item(x.id, x.name, x.type, x.poster, x.videoId, x.offset, x.duration, x.last, y)
+            }
+        }
         lastItems = list
         s.saveItems(list)
         val es = buildEntries(s)
