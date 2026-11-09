@@ -1,7 +1,9 @@
 package com.seguirviendo
 import android.app.Activity
 import android.app.AlertDialog
+import android.content.DialogInterface
 import android.content.Intent
+import android.view.inputmethod.EditorInfo
 import android.content.res.ColorStateList
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
@@ -151,6 +153,7 @@ class MainActivity : Activity() {
     override fun onResume() {
         super.onResume()
         val s = Store(this)
+        backfillInfo()
         if (s.authKey != null) {
             if (Sync.entries.isNotEmpty()) render()   // muestra ya el orden nuevo (lo último abierto, primero)
             sync("", "")
@@ -298,10 +301,19 @@ class MainActivity : Activity() {
         if (lleno()) return
         val key = Store(this).tmdbKey
         if (key.isNullOrBlank()) { askKey { startAdd() }; return }
-        val input = EditText(this).apply { hint = "Título original o en inglés (ej. Carrie)"; inputType = InputType.TYPE_CLASS_TEXT; setSingleLine() }
-        AlertDialog.Builder(this).setTitle("Agregar manual (datos: TMDB)").setView(input)
-            .setPositiveButton("Buscar") { _, _ -> doSearch(key, input.text.toString().trim()) }
-            .setNegativeButton("Salir", null).show()
+        val input = EditText(this).apply {
+            hint = "Título original o en inglés (ej. Carrie)"; inputType = InputType.TYPE_CLASS_TEXT
+            setSingleLine(); imeOptions = EditorInfo.IME_ACTION_SEARCH
+        }
+        val dlg = AlertDialog.Builder(this).setTitle("Agregar manual (datos: TMDB)").setView(input)
+            .setPositiveButton("Buscar", null).setNegativeButton("Salir", null).create()
+        val go = { dlg.dismiss(); doSearch(key, input.text.toString().trim()) }
+        dlg.setOnShowListener { dlg.getButton(DialogInterface.BUTTON_POSITIVE).setOnClickListener { go() } }
+        input.setOnEditorActionListener { _, _, _ -> go(); true }          // Enter / "Buscar" del teclado
+        input.setOnKeyListener { _, code, ev ->                             // flecha abajo: va siempre a "Buscar"
+            if (code == KeyEvent.KEYCODE_DPAD_DOWN && ev.action == KeyEvent.ACTION_DOWN) { dlg.getButton(DialogInterface.BUTTON_POSITIVE).requestFocus(); true } else false
+        }
+        dlg.show()
     }
 
     private fun doSearch(key: String, q: String) {
@@ -325,49 +337,69 @@ class MainActivity : Activity() {
         val pm = packageManager
         val q = Intent(Intent.ACTION_MAIN).addCategory("android.intent.category.LEANBACK_LAUNCHER")
         return pm.queryIntentActivities(q, 0).map { it.activityInfo.packageName to it.loadLabel(pm).toString() }
-            .filter { it.first != packageName }.distinctBy { it.first }.sortedBy { it.second.lowercase() }
+            .filter { it.first != packageName }.distinctBy { it.first }
     }
 
-    // Opciones reducidas: Netflix, Flow, Disney+ y "Otra…"
+    private fun packageFor(label: String): String {
+        val kw = when (label) { "Netflix" -> "netflix"; "Flow" -> "flow"; "YouTube" -> "youtube"; "Mercado Play" -> "mercado"; else -> return "" }
+        return installedApps().firstOrNull { it.second.lowercase().contains(kw) }?.first ?: ""
+    }
+
+    // Opciones fijas y en este orden; "Otro" no abre ninguna lista.
     private fun pickApp(hit: Tmdb.Hit) {
-        val installed = installedApps()
-        val names = ArrayList<String>(); val apps = ArrayList<Pair<String, String>?>()
-        for ((nm, kw) in listOf("Netflix" to "netflix", "Flow" to "flow", "Disney+" to "disney")) {
-            val a = installed.firstOrNull { it.second.lowercase().contains(kw) }
-            if (a != null) { names.add(nm); apps.add(a.first to nm) }
-        }
-        names.add("Otra…"); apps.add(null)
-        AlertDialog.Builder(this).setTitle("¿Dónde la vas a ver?").setItems(names.toTypedArray()) { _, i ->
-            val a = apps[i]
-            if (a != null) addManual(hit, a.first, a.second) else pickOther(hit, installed)
-        }.setNegativeButton("Salir", null).show()
-    }
-
-    private fun pickOther(hit: Tmdb.Hit, apps: List<Pair<String, String>>) {
-        if (apps.isEmpty()) { Toast.makeText(this, "No encontré apps instaladas para elegir", Toast.LENGTH_LONG).show(); return }
-        AlertDialog.Builder(this).setTitle("¿En qué app?").setItems(apps.map { it.second }.toTypedArray()) { _, i ->
-            addManual(hit, apps[i].first, apps[i].second)
+        val names = arrayOf("Netflix", "Flow", "YouTube", "Mercado Play", "Otro")
+        AlertDialog.Builder(this).setTitle("¿Dónde la vas a ver?").setItems(names) { _, i ->
+            addManual(hit, if (names[i] == "Otro") "" else packageFor(names[i]), names[i])
         }.setNegativeButton("Salir", null).show()
     }
 
     private fun addManual(hit: Tmdb.Hit, pkg: String, label: String) {
         if (lleno()) return
-        Store(this).addManual(JSONObject().put("id", (if (hit.tv) "mt" else "mm") + hit.id).put("name", hit.title)
-            .put("type", if (hit.tv) "series" else "movie").put("poster", hit.poster ?: "")
-            .put("pkg", pkg).put("label", label).put("last", System.currentTimeMillis()))
-        refreshLocal()
+        val key = Store(this).tmdbKey
+        thread {
+            val inf = try { if (key.isNullOrBlank()) Tmdb.Info(0, hit.year) else Tmdb.info(key, hit.id, hit.tv) } catch (e: Exception) { Tmdb.Info(0, hit.year) }
+            Store(this).addManual(JSONObject().put("id", (if (hit.tv) "mt" else "mm") + hit.id).put("name", hit.title)
+                .put("type", if (hit.tv) "series" else "movie").put("poster", hit.poster ?: "")
+                .put("pkg", pkg).put("label", label).put("rt", if (inf.runtime > 0) inf.runtime else -1)
+                .put("yr", inf.year.ifBlank { hit.year }).put("last", System.currentTimeMillis()))
+            refreshLocal()
+        }
+    }
+
+    // Completa duración y años de lo agregado antes de tener esta función.
+    private fun backfillInfo() {
+        val s = Store(this); val key = s.tmdbKey
+        if (key.isNullOrBlank()) return
+        thread {
+            var changed = false
+            val a = s.manual()
+            for (i in 0 until a.length()) {
+                val o = a.getJSONObject(i)
+                if (o.has("rt") && o.has("yr")) continue
+                val id = o.getString("id")
+                val n = id.drop(2).toIntOrNull() ?: continue
+                val inf = try { Tmdb.info(key, n, id.startsWith("mt")) } catch (e: Exception) { continue }
+                s.setInfo(id, if (inf.runtime > 0) inf.runtime else -1, inf.year); changed = true
+            }
+            if (changed) refreshLocal()
+        }
     }
 
     private fun showInfo(e: Entry) {
         val x = e.item
         val svc = e.label.removePrefix(x.name).trim()
-        val sp = SpannableString(x.name + " " + svc)
-        sp.setSpan(ForegroundColorSpan(yellow), x.name.length + 1, sp.length, 0)
-        sp.setSpan(StyleSpan(Typeface.BOLD_ITALIC), x.name.length + 1, sp.length, 0)
+        val yr = if (x.year.isNotBlank()) " - ${x.year}" else ""
+        val sp = SpannableString(x.name + yr + " " + svc)
+        if (yr.isNotEmpty()) sp.setSpan(ForegroundColorSpan(sky), x.name.length, x.name.length + yr.length, 0)
+        sp.setSpan(ForegroundColorSpan(yellow), x.name.length + yr.length + 1, sp.length, 0)
+        sp.setSpan(StyleSpan(Typeface.BOLD_ITALIC), x.name.length + yr.length + 1, sp.length, 0)
         info1.text = sp
         val p = x.videoId?.split(":")?.takeIf { it.size >= 3 }
         info2.text = if (x.type == "movie") "Película" else if (p != null) "Temporada ${p[1]} · Episodio ${p[2]}" else "Serie"
-        if (x.duration > 0) {
+        if (e.pkg != null) {   // lo agregado a mano: muestra cuánto dura
+            bar.visibility = View.INVISIBLE
+            info3.text = if (x.duration > 0) (if (x.type == "movie") "Duración: ${x.duration} min" else "Capítulos de ${x.duration} min") else ""
+        } else if (x.duration > 0) {
             bar.visibility = View.VISIBLE; bar.progress = (x.offset * 1000 / x.duration).toInt().coerceIn(0, 1000)
             info3.text = "Minuto ${x.offset / 60000} de ${x.duration / 60000}"
         } else { bar.visibility = View.INVISIBLE; info3.text = "" }

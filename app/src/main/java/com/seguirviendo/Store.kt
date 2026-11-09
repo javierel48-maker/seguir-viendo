@@ -22,7 +22,7 @@ class Store(c: Context) {
     fun saveItems(list: List<Item>) {
         val a = JSONArray()
         for (x in list) a.put(JSONObject().put("id", x.id).put("name", x.name).put("type", x.type).put("poster", x.poster ?: "")
-            .put("video", x.videoId ?: "").put("off", x.offset).put("dur", x.duration).put("last", x.last))
+            .put("video", x.videoId ?: "").put("off", x.offset).put("dur", x.duration).put("last", x.last).put("yr", x.year))
         p.edit().putString("li", a.toString()).apply()
     }
     fun loadItems(): List<Item> {
@@ -32,7 +32,7 @@ class Store(c: Context) {
             for (i in 0 until a.length()) {
                 val o = a.getJSONObject(i)
                 out.add(Item(o.getString("id"), o.optString("name"), o.optString("type"), o.optString("poster").takeIf { it.isNotBlank() },
-                    o.optString("video").takeIf { it.isNotBlank() }, o.optLong("off"), o.optLong("dur"), o.optLong("last")))
+                    o.optString("video").takeIf { it.isNotBlank() }, o.optLong("off"), o.optLong("dur"), o.optLong("last"), o.optString("yr")))
             }
         } catch (e: Exception) { }
         return out
@@ -48,6 +48,11 @@ class Store(c: Context) {
         val a = manual(); val n = JSONArray()
         for (i in 0 until a.length()) if (a.getJSONObject(i).getString("id") != id) n.put(a.getJSONObject(i))
         saveManual(n)
+    }
+    fun setInfo(id: String, rt: Int, yr: String) {
+        val a = manual()
+        for (i in 0 until a.length()) { val o = a.getJSONObject(i); if (o.getString("id") == id) o.put("rt", rt).put("yr", yr) }
+        saveManual(a)
     }
     fun updateEpisode(id: String, season: Int, episode: Int) {
         val a = manual()

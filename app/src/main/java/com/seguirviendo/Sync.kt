@@ -26,6 +26,7 @@ object Sync {
     fun open(c: Context, e: Entry) = openLink(c, e.item.type, e.item.id, e.item.videoId, e.variant, e.pkg)
 
     fun openLink(c: Context, t: String, i: String, v: String?, variant: String, pkg: String? = null, done: (() -> Unit)? = null) {
+        if (pkg != null && pkg.isBlank()) { done?.invoke(); return }   // "Otro": no abre nada
         val appCtx = c.applicationContext
         Thread { try { touch(appCtx, i) } catch (e: Exception) { } }.start()
         if (pkg != null) {   // lo agregado a mano: abre la app de la plataforma elegida
@@ -82,7 +83,7 @@ object Sync {
         for (i in 0 until a.length()) {
             val o = a.getJSONObject(i)
             out.add(Item(o.getString("id"), o.optString("name"), o.optString("type"), o.optString("poster").takeIf { it.isNotBlank() },
-                null, 0L, 0L, o.optLong("last")))
+                null, 0L, o.optInt("rt", 0).coerceAtLeast(0).toLong(), o.optLong("last"), o.optString("yr")))   // en lo manual, "duration" guarda los minutos
         }
         return out
     }
@@ -98,7 +99,8 @@ object Sync {
             val ep = if (x.type != "movie" && p != null && p.size >= 3) " · T${p[1]} E${p[2]}" else ""
             val m = meta[x.id]
             val svc = m?.second ?: "Stremio"
-            Entry(x, "C", "${x.name} ($svc)", "${x.name}$ep ($svc)", m?.first)
+            val yr = if (x.year.isNotBlank()) " - ${x.year}" else ""
+            Entry(x, "C", "${x.name} ($svc)", "${x.name}$yr$ep ($svc)", m?.first)
         }
     }
 

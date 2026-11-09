@@ -6,7 +6,7 @@ import java.net.URL
 import java.time.Instant
 
 class Item(val id: String, val name: String, val type: String, val poster: String?,
-           val videoId: String?, val offset: Long, val duration: Long, val last: Long)
+           val videoId: String?, val offset: Long, val duration: Long, val last: Long, val year: String = "")
 
 class Lib(val total: Int, val items: List<Item>)
 
@@ -39,7 +39,7 @@ object Stremio {
             out.add(Item(o.getString("_id"), o.optString("name"), o.optString("type"),
                 o.optString("poster").takeIf { it.isNotBlank() },
                 st.optString("video_id").takeIf { it.isNotBlank() },
-                off, st.optLong("duration"), last))
+                off, st.optLong("duration"), last, o.optString("year").let { if (it == "null") "" else it }))
         }
         return Lib(arr.length(), out.sortedByDescending { it.last }.take(450))
     }
