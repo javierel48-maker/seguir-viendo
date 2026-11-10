@@ -250,14 +250,27 @@ class MainActivity : Activity() {
 
     private fun select(i: Int) { selIdx = i; updateClip() }
 
-    // Lo que sube y se sale por arriba de la estantería no se dibuja; solo la caja elegida puede sobresalir.
+    // Las filas de arriba y de abajo se cortan a la mitad en el borde de la madera. Solo con el scroll al principio
+    // (primera fila) se deja sobresalir por arriba la caja elegida.
     private fun updateClip() {
-        val top = scroll.scrollY
-        covers.forEachIndexed { j, v ->
-            val y = (v.parent as View).top + v.top
-            v.alpha = if (j == selIdx || selIdx < 0 && y >= top) 1f else if (y >= top) 0.8f else 0f
-        }
-        for (l in ledges) l.alpha = if (l.top >= top) 1f else 0f
+        val w = scroll.width; val h = scroll.height
+        if (w == 0 || h == 0) return
+        scroll.clipBounds = if (scroll.scrollY <= 0) android.graphics.Rect(0, -dp(80), w, h) else android.graphics.Rect(0, 0, w, h)
+        covers.forEachIndexed { j, v -> v.alpha = if (j == selIdx || selIdx < 0) 1f else 0.8f }
+    }
+
+    // Mantiene a la vista media fila de arriba y de abajo de la caja elegida (da sensación de scroll).
+    private fun ensureVisible(v: View) {
+        val vh = scroll.height
+        if (vh == 0) return
+        val y = (v.parent as View).top + v.top
+        val up = dp(25) + v.height / 2
+        val down = v.height + dp(25) + v.height / 2
+        val cur = scroll.scrollY
+        var target = cur
+        if (y - cur < up) target = maxOf(0, y - up)
+        else if (y + down - cur > vh) target = y + down - vh
+        if (target != cur) scroll.smoothScrollTo(0, target)
     }
 
     private fun cover(e: Entry, idx: Int, w: Int, h: Int): View {
@@ -278,7 +291,7 @@ class MainActivity : Activity() {
             v.background = coverBg(f)
             if (f) {
                 v.animate().scaleX(1.35f).scaleY(1.35f).translationY(-dp(8).toFloat()).translationZ(dp(12).toFloat()).setDuration(120).start()
-                select(idx); showInfo(e)
+                select(idx); showInfo(e); ensureVisible(v)
             } else v.animate().scaleX(1f).scaleY(1f).translationY(0f).translationZ(0f).setDuration(120).start()
         }
         box.setOnClickListener { Sync.open(this, e) }
