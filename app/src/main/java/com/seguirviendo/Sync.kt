@@ -112,6 +112,8 @@ object Sync {
 
     private fun publishRow(c: Context, s: Store, es: List<Entry>): String {
         return try {
+            val sigNow = es.take(50).joinToString("|") { it.item.id + it.rowTitle + (it.item.poster ?: "") }
+            if (s.channelId > 0 && sigNow == s.pubSig && System.currentTimeMillis() - s.pubTime < 6 * 3600 * 1000L) return " Fila sin cambios."
             val chId = channel(c, s)
             logo(c, chId)
             c.contentResolver.query(TvContractCompat.buildPreviewProgramsUriForChannel(chId), arrayOf(BaseColumns._ID), null, null, null)?.use {
@@ -130,9 +132,13 @@ object Sync {
                 x.poster?.let { p -> b.setPosterArtUri(Uri.parse("content://com.seguirviendo.posters/p.png?v=12&u=" + Uri.encode(p))) }
                 if (c.contentResolver.insert(TvContractCompat.PreviewPrograms.CONTENT_URI, b.build().toContentValues()) != null) n++
             }
+            s.pubSig = sigNow; s.pubTime = System.currentTimeMillis()
             " Fila propia: $n."
         } catch (e: Exception) { " Fila propia con error: ${e.message}." }
     }
+
+    // Arma la estantería con lo ya guardado, sin red ni publicar la fila (arranque rápido).
+    fun load(c: Context) { entries = buildEntries(Store(c)) }
 
     // Reordena y republica la fila sin tocar la red (cambios locales: abrir, agregar, borrar, marcar vista).
     fun rebuild(c: Context) {
@@ -151,27 +157,35 @@ object Sync {
         rebuild(c)
     }
 
-    fun run(c: Context): String {
+    fun run(c: Context, early: (() -> Unit)? = null): String {
         val s = Store(c)
         val key = s.authKey ?: return "Falta iniciar sesión"
         val lib = Stremio.inProgress(key)
         val hid = s.hidden()
         val tk = s.tmdbKey
-        var pedidos = 0
-        val list = lib.items.filter { it.last > hid.optLong(it.id, -1) }.map { x ->
+        val base = lib.items.filter { it.last > hid.optLong(it.id, -1) }
+        // Pasada 1 (rápida): solo con los años que ya se conocen. Se muestra enseguida.
+        val first = base.map { x ->
             if (x.year.isNotBlank() || !x.id.startsWith("tt")) x
-            else {   // sin año en Stremio: se completa desde TMDB (y se recuerda)
-                var y = s.yearCache(x.id)
-                if (y == null && !tk.isNullOrBlank() && pedidos < 25) {
-                    pedidos++
-                    y = try { Tmdb.yearForImdb(tk, x.id, x.type != "movie") } catch (e: Exception) { null }
-                    if (y != null) s.setYearCache(x.id, y)
-                }
-                if (y.isNullOrBlank()) x else Item(x.id, x.name, x.type, x.poster, x.videoId, x.offset, x.duration, x.last, y)
+            else { val y = s.yearCache(x.id); if (y.isNullOrBlank()) x else Item(x.id, x.name, x.type, x.poster, x.videoId, x.offset, x.duration, x.last, y) }
+        }
+        lastItems = first
+        s.saveItems(first)
+        entries = buildEntries(s)
+        early?.invoke()
+        // Pasada 2 (lenta): completa los años que faltan desde TMDB (hasta 25 por vez) y los recuerda.
+        var pedidos = 0
+        var cambio = false
+        val list = first.map { x ->
+            if (x.year.isNotBlank() || !x.id.startsWith("tt") || s.yearCache(x.id) != null || tk.isNullOrBlank() || pedidos >= 25) x
+            else {
+                pedidos++
+                val y = try { Tmdb.yearForImdb(tk, x.id, x.type != "movie") } catch (e: Exception) { null }
+                if (y != null) s.setYearCache(x.id, y)
+                if (y.isNullOrBlank()) x else { cambio = true; Item(x.id, x.name, x.type, x.poster, x.videoId, x.offset, x.duration, x.last, y) }
             }
         }
-        lastItems = list
-        s.saveItems(list)
+        if (cambio) { lastItems = list; s.saveItems(list) }
         val es = buildEntries(s)
         entries = es
         val msg = "Biblioteca: ${lib.total}. A medias: ${list.size}." + publishRow(c, s, es)

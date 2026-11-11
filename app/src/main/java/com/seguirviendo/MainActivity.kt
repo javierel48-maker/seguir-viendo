@@ -85,6 +85,8 @@ class MainActivity : Activity() {
         }
         val header = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; clipChildren = false
+            addView(ImageView(this@MainActivity).apply { setImageResource(R.drawable.banner); scaleType = ImageView.ScaleType.FIT_CENTER },
+                LinearLayout.LayoutParams(dp(82), dp(46)).apply { rightMargin = dp(12) })   // banner antes del título
             addView(tv(title, 22f, cream, false, true), LinearLayout.LayoutParams(0, WC, 1f))
         }
         btnSearch = Button(this).apply { text = "Buscar en Stremio" }; neon(btnSearch, magenta)
@@ -93,8 +95,9 @@ class MainActivity : Activity() {
         btnSearch.setOnClickListener { Sync.openStremioSearch(this) }
         btnAdd.setOnClickListener { startAdd() }
         btnMore.setOnClickListener {
-            AlertDialog.Builder(this).setItems(arrayOf("Sincronizar ahora", "Activar fila en el inicio", "Clave de TMDB")) { _, w ->
-                when (w) { 0 -> sync("", ""); 1 -> Sync.askRow(this); else -> askKey { } }
+            val tr = if (Trakt.connected(Store(this))) "Trakt: conectado (volver a conectar)" else "Conectar Trakt"
+            AlertDialog.Builder(this).setItems(arrayOf("Sincronizar ahora", "Activar fila en el inicio", "Clave de TMDB", tr, "Verificar backup", "Restaurar backup")) { _, w ->
+                when (w) { 0 -> sync("", ""); 1 -> Sync.askRow(this); 2 -> askKey { }; 3 -> connectTrakt(); 4 -> verifyBackup(); else -> restoreBackup() }
             }.show()
         }
         header.addView(btnSearch, LinearLayout.LayoutParams(WC, WC).apply { rightMargin = dp(10) })
@@ -160,10 +163,18 @@ class MainActivity : Activity() {
         super.onResume()
         val s = Store(this)
         backfillInfo()
+        offerRestoreOnStart(s)
         if (s.authKey != null) {
             if (Sync.entries.isNotEmpty()) render()   // muestra ya el orden nuevo (lo último abierto, primero)
+            else loadLocal()                           // arranque en frío: muestra al instante lo guardado
             sync("", "")
         } else if (s.manual().length() > 0) refreshLocal()
+        thread { try { Backup.save(applicationContext) } catch (e: Exception) { } }   // backup al abrir
+    }
+
+    // Con la lista guardada: sin red y sin tocar la fila del inicio.
+    private fun loadLocal() {
+        thread { Sync.load(this); runOnUiThread { if (Sync.entries.isNotEmpty()) { login.visibility = View.GONE; shelfFrame.visibility = View.VISIBLE; render() } } }
     }
 
     // Navegación con el control: por posición exacta en la grilla, sin depender de la geometría de Android.
@@ -196,7 +207,7 @@ class MainActivity : Activity() {
         try {
             if (e.isNotBlank()) s.authKey = Stremio.login(e, p)
             if (s.authKey == null) throw Exception("Falta iniciar sesión")
-            statusMsg = Sync.run(this)
+            statusMsg = Sync.run(this) { runOnUiThread { login.visibility = View.GONE; shelfFrame.visibility = View.VISIBLE; render() } }   // muestra en cuanto llega lo de Stremio
             runOnUiThread { login.visibility = View.GONE; shelfFrame.visibility = View.VISIBLE; render(); Sync.askRowOnce(this) }
         } catch (x: Exception) { runOnUiThread { statusMsg = "Error: ${x.message}"; if (Sync.entries.isEmpty()) showEmpty() } }
     }
@@ -301,12 +312,207 @@ class MainActivity : Activity() {
 
     private fun showMenu(e: Entry) {
         val manual = e.pkg != null
-        AlertDialog.Builder(this).setTitle(e.item.name).setItems(arrayOf("Borrar de la estantería", "Salir")) { _, w ->
-            if (w == 0) {
-                if (manual) { Store(this).removeManual(e.item.id); refreshLocal() }
-                else { Store(this).hide(e.item.id); sync("", "") }
-            }   // "Salir": no hace nada
-        }.show()
+        val opts = ArrayList<String>(); val acts = ArrayList<() -> Unit>()
+        if (manual) {
+            if (e.item.type == "movie") { opts.add("Marcar como visto en Trakt"); acts.add { traktMovie(e) } }
+            else { opts.add("Capítulos pendientes en Trakt"); acts.add { traktSeries(e) } }
+        }
+        opts.add("Borrar de la estantería"); acts.add { removeEntry(e) }
+        opts.add("Salir"); acts.add { }
+        AlertDialog.Builder(this).setTitle(e.item.name).setItems(opts.toTypedArray()) { _, w -> acts[w]() }.show()
+    }
+
+    private fun removeEntry(e: Entry) {
+        if (e.pkg != null) { Store(this).removeManual(e.item.id); refreshLocal() }
+        else { Store(this).hide(e.item.id); sync("", "") }
+    }
+
+    private fun toast(m: String) = Toast.makeText(this, m, Toast.LENGTH_LONG).show()
+
+    // ---- Trakt ----
+    private fun needTrakt(): Boolean {
+        if (Trakt.connected(Store(this))) return false
+        AlertDialog.Builder(this).setTitle("Trakt no está conectado").setMessage("Conectalo una sola vez y queda listo.")
+            .setPositiveButton("Conectar ahora") { _, _ -> connectTrakt() }.setNegativeButton("Salir", null).show()
+        return true
+    }
+
+    private fun connectTrakt() {
+        val s = Store(this)
+        val id = EditText(this).apply { hint = if (s.trClient.isNullOrBlank()) "Client ID de Trakt" else "Client ID (vacío = el mismo)"; setSingleLine() }
+        val sec = EditText(this).apply { hint = if (s.trSecret.isNullOrBlank()) "Client Secret (si tu app no tiene, dejalo vacío)" else "Client Secret (vacío = el mismo)"; setSingleLine() }
+        val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(20), dp(8), dp(20), 0); addView(id); addView(sec) }
+        AlertDialog.Builder(this).setTitle("Conectar Trakt").setView(box)
+            .setPositiveButton("Conectar") { _, _ ->
+                val a = id.text.toString().trim(); val b = sec.text.toString().trim()
+                if (a.isNotEmpty() && a != s.trClient) { s.trClient = a; s.trAccess = null; s.trRefresh = null }
+                if (b.isNotEmpty() && b != s.trSecret) { s.trSecret = b; s.trAccess = null; s.trRefresh = null }
+                if (Trakt.hasKeys(s)) startDevice() else toast("Falta el Client ID de Trakt")
+            }.setNegativeButton("Cancelar", null).show()
+    }
+
+    private fun startDevice() {
+        val s = Store(this)
+        val cancel = java.util.concurrent.atomic.AtomicBoolean(false)
+        val holder = arrayOfNulls<AlertDialog>(1)
+        thread {
+            try {
+                val d = Trakt.deviceCode(s)
+                runOnUiThread {
+                    holder[0] = AlertDialog.Builder(this).setTitle("Conectar Trakt")
+                        .setMessage("Desde el celular o la compu entrá a\n${d.url}\ny escribí este código:\n\n${d.userCode}\n\nCuando lo aprobés, esto se cierra solo.")
+                        .setNegativeButton("Cancelar") { _, _ -> cancel.set(true) }
+                        .setOnCancelListener { cancel.set(true) }.show()
+                }
+                val err = Trakt.waitForApproval(s, d) { cancel.get() }
+                runOnUiThread {
+                    holder[0]?.dismiss()
+                    if (err == null) toast("Trakt conectado") else if (err != "Cancelado") toast("No se conectó: $err")
+                }
+            } catch (x: Exception) { runOnUiThread { holder[0]?.dismiss(); toast("Error: ${x.message}") } }
+        }
+    }
+
+    private fun notFound(e: Entry) {
+        AlertDialog.Builder(this).setTitle("No se encontró en Trakt")
+            .setMessage("\"${e.item.name}\" no figura en Trakt (puede ser muy nueva o poco común). Queda en la estantería; si querés, cargala vos desde trakt.tv.")
+            .setPositiveButton("Dejarla", null).setNegativeButton("Quitar igual de la estantería") { _, _ -> removeEntry(e) }.show()
+    }
+
+    private fun traktMovie(e: Entry) {
+        if (needTrakt()) return
+        val id = e.item.id.drop(2).toIntOrNull() ?: return
+        toast("Registrando en Trakt…")
+        thread {
+            try {
+                val ok = Trakt.markMovie(Store(this), id)
+                runOnUiThread { if (ok) { toast("Registrada como vista en Trakt"); removeEntry(e) } else notFound(e) }
+            } catch (x: Exception) { runOnUiThread { toast("Error: ${x.message}") } }
+        }
+    }
+
+    private fun traktSeries(e: Entry) {
+        if (needTrakt()) return
+        val id = e.item.id.drop(2).toIntOrNull() ?: return
+        toast("Consultando Trakt…")
+        thread {
+            try {
+                val s = Store(this)
+                val tid = Trakt.showId(s, id)
+                if (tid == null) { runOnUiThread { notFound(e) } }
+                else { val pend = Trakt.pending(s, tid); runOnUiThread { showPending(e, tid, pend) } }
+            } catch (x: Exception) { runOnUiThread { toast("Error: ${x.message}") } }
+        }
+    }
+
+    private fun showPending(e: Entry, tid: Int, pend: List<Trakt.Pending>) {
+        if (pend.isEmpty()) {
+            AlertDialog.Builder(this).setTitle(e.item.name).setMessage("No te falta ningún capítulo emitido: en Trakt ya figura todo como visto.")
+                .setPositiveButton("Quitar de la estantería") { _, _ -> removeEntry(e) }.setNegativeButton("Dejarla", null).show()
+            return
+        }
+        val shown = pend.take(150)
+        val names = shown.map { "T${it.season} E${it.number}" + (if (it.title.isNotBlank()) " · ${it.title}" else "") }.toTypedArray()
+        val checked = BooleanArray(shown.size)
+        AlertDialog.Builder(this).setTitle("Sin ver en Trakt: ${pend.size}")
+            .setMultiChoiceItems(names, checked) { _, i, on -> checked[i] = on }
+            .setPositiveButton("Marcar elegidos") { _, _ ->
+                val sel = shown.filterIndexed { i, _ -> checked[i] }
+                if (sel.isNotEmpty()) markEps(e, tid, sel, pend.size)
+            }
+            .setNeutralButton("Marcar todos (${pend.size})") { _, _ -> markEps(e, tid, pend, pend.size) }
+            .setNegativeButton("Salir", null).show()
+    }
+
+    private fun markEps(e: Entry, tid: Int, sel: List<Trakt.Pending>, total: Int) {
+        toast("Registrando en Trakt…")
+        thread {
+            try {
+                val n = Trakt.markEpisodes(Store(this), tid, sel)
+                val quedan = total - sel.size
+                runOnUiThread {
+                    if (quedan <= 0 && n > 0) { toast("Registré $n capítulos. Ya no te falta ninguno: la saco de la estantería."); removeEntry(e) }
+                    else toast(if (n > 0) "Registré $n capítulos como vistos en Trakt" else "Trakt no registró ningún capítulo")
+                }
+            } catch (x: Exception) { runOnUiThread { toast("Error: ${x.message}") } }
+        }
+    }
+
+    // ---- Backup de lo agregado a mano ----
+    private var asking = false
+
+    private fun offerRestoreOnStart(s: Store) {
+        if (asking || s.manual().length() > 0 || s.backupSig != null) return
+        asking = true
+        thread {
+            val b = Backup.find(applicationContext)
+            runOnUiThread {
+                if (b == null || b.count == 0) { asking = false }
+                else AlertDialog.Builder(this).setTitle("Encontré un backup")
+                    .setMessage("Del ${Backup.fmt(b.ts)}, con ${b.count} títulos agregados a mano. ¿Los restauro?")
+                    .setPositiveButton("Restaurar") { _, _ -> doRestore(b) }
+                    .setNegativeButton("No, empezar de cero") { _, _ -> Store(this).backupSig = "x" }
+                    .setOnDismissListener { asking = false }.show()
+            }
+        }
+    }
+
+    private fun doRestore(b: Backup.Info) {
+        thread {
+            val n = Backup.restore(applicationContext, b)
+            runOnUiThread { toast(if (n > 0) "Restauré $n títulos" else "No faltaba nada: ya estaba todo"); refreshLocal() }
+        }
+    }
+
+    private fun verifyBackup() {
+        thread {
+            val b = Backup.find(applicationContext)
+            val cur = Store(this).manual().length()
+            runOnUiThread {
+                val msg = if (b == null) "No encontré ningún backup en Descargas (${Backup.NAME}). Se crea solo al abrir la app o al agregar algo a mano."
+                else "Último backup: ${Backup.fmt(b.ts)}\nTítulos a mano guardados: ${b.count}\nTítulos a mano en la estantería: $cur\n\n" +
+                    (if (b.count == cur) "Todo bien: el backup está al día." else "No coinciden: tocá \"Guardar ahora\".")
+                AlertDialog.Builder(this).setTitle("Verificar backup").setMessage(msg)
+                    .setPositiveButton("Guardar ahora") { _, _ ->
+                        thread { val r = Backup.save(applicationContext, false, true); runOnUiThread { toast(r) } }
+                    }.setNegativeButton("Cerrar", null).show()
+            }
+        }
+    }
+
+    private fun restoreBackup() {
+        thread {
+            val b = Backup.find(applicationContext)
+            runOnUiThread {
+                if (b == null) AlertDialog.Builder(this).setTitle("Restaurar backup")
+                    .setMessage("No encontré un backup en Descargas. Si lo tenés en otro lado, elegí el archivo.")
+                    .setPositiveButton("Elegir archivo…") { _, _ -> pickBackupFile() }.setNegativeButton("Salir", null).show()
+                else confirmRestore(b)
+            }
+        }
+    }
+
+    private fun confirmRestore(b: Backup.Info) {
+        AlertDialog.Builder(this).setTitle("Restaurar backup")
+            .setMessage("Del ${Backup.fmt(b.ts)}, con ${b.count} títulos. Solo agrega lo que falte: no borra ni duplica nada.")
+            .setPositiveButton("Restaurar") { _, _ -> doRestore(b) }.setNegativeButton("Salir", null).show()
+    }
+
+    private fun pickBackupFile() {
+        try {
+            startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT).addCategory(Intent.CATEGORY_OPENABLE).setType("*/*"), 77)
+        } catch (x: Exception) { toast("Este aparato no tiene un explorador de archivos") }
+    }
+
+    override fun onActivityResult(req: Int, res: Int, data: Intent?) {
+        super.onActivityResult(req, res, data)
+        val u = data?.data
+        if (req == 77 && res == RESULT_OK && u != null) {
+            thread {
+                val b = try { Backup.parse(contentResolver.openInputStream(u)?.bufferedReader()?.use { it.readText() }) } catch (x: Exception) { null }
+                runOnUiThread { if (b == null) toast("Ese archivo no es un backup de Javi Videoclub") else confirmRestore(b) }
+            }
+        }
     }
 
     // ---- Agregar a mano (búsqueda en TMDB por título original / inglés) ----

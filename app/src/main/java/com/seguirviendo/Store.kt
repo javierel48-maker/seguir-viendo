@@ -3,7 +3,7 @@ import android.content.Context
 import org.json.JSONArray
 import org.json.JSONObject
 
-class Store(c: Context) {
+class Store(private val c: Context) {
     private val p = c.getSharedPreferences("s", 0)
     var authKey: String?
         get() = p.getString("k", null)
@@ -40,7 +40,35 @@ class Store(c: Context) {
     fun yearCache(id: String): String? = JSONObject(p.getString("ym", "{}")!!).let { if (it.has(id)) it.getString(id) else null }
     fun setYearCache(id: String, y: String) { p.edit().putString("ym", JSONObject(p.getString("ym", "{}")!!).put(id, y).toString()).apply() }
     fun manual(): JSONArray = JSONArray(p.getString("m", "[]")!!)
-    private fun saveManual(a: JSONArray) { p.edit().putString("m", a.toString()).apply() }
+    private fun saveManual(a: JSONArray, allowEmpty: Boolean = false) {
+        p.edit().putString("m", a.toString()).apply()
+        Backup.saveAsync(c.applicationContext, allowEmpty)   // backup automático de lo agregado a mano
+    }
+    var backupSig: String?
+        get() = p.getString("bs", null)
+        set(v) { p.edit().putString("bs", v).apply() }
+    var pubSig: String
+        get() = p.getString("ps", "")!!
+        set(v) { p.edit().putString("ps", v).apply() }
+    var pubTime: Long
+        get() = p.getLong("pt", 0L)
+        set(v) { p.edit().putLong("pt", v).apply() }
+    // Trakt
+    var trClient: String?
+        get() = p.getString("trc", null)
+        set(v) { p.edit().putString("trc", v).apply() }
+    var trSecret: String?
+        get() = p.getString("trs", null)
+        set(v) { p.edit().putString("trs", v).apply() }
+    var trAccess: String?
+        get() = p.getString("tra", null)
+        set(v) { p.edit().putString("tra", v).apply() }
+    var trRefresh: String?
+        get() = p.getString("trr", null)
+        set(v) { p.edit().putString("trr", v).apply() }
+    var trExpires: Long
+        get() = p.getLong("tre", 0L)
+        set(v) { p.edit().putLong("tre", v).apply() }
     fun addManual(o: JSONObject) {
         val a = manual(); val n = JSONArray()
         for (i in 0 until a.length()) if (a.getJSONObject(i).getString("id") != o.getString("id")) n.put(a.getJSONObject(i))
@@ -49,7 +77,7 @@ class Store(c: Context) {
     fun removeManual(id: String) {
         val a = manual(); val n = JSONArray()
         for (i in 0 until a.length()) if (a.getJSONObject(i).getString("id") != id) n.put(a.getJSONObject(i))
-        saveManual(n)
+        saveManual(n, true)
     }
     fun setInfo(id: String, rt: Int, yr: String) {
         val a = manual()
