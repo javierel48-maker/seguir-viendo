@@ -106,6 +106,14 @@ object Trakt {
         return null
     }
 
+    // Capítulo siguiente que te toca ver, según Trakt (null si no hay o ya viste todo).
+    fun next(s: Store, traktId: Int): Pair<Int, Int>? {
+        val prog = JSONObject(call(s, "GET", "/shows/$traktId/progress/watched?hidden=false&specials=false").body)
+        val n = prog.optJSONObject("next_episode") ?: return null
+        val sn = n.optInt("season"); val en = n.optInt("number")
+        return if (sn > 0 && en > 0) Pair(sn, en) else null
+    }
+
     // Capítulos emitidos que NO figuran como vistos en Trakt (con la numeración y nombres de Trakt).
     fun pending(s: Store, traktId: Int): List<Pending> {
         val prog = JSONObject(call(s, "GET", "/shows/$traktId/progress/watched?hidden=false&specials=false").body)

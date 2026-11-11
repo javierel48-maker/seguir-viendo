@@ -163,6 +163,7 @@ class MainActivity : Activity() {
         super.onResume()
         val s = Store(this)
         backfillInfo()
+        refreshNext(s)
         offerRestoreOnStart(s)
         if (s.authKey != null) {
             if (Sync.entries.isNotEmpty()) render()   // muestra ya el orden nuevo (lo último abierto, primero)
@@ -414,14 +415,47 @@ class MainActivity : Activity() {
         val shown = pend.take(150)
         val names = shown.map { "T${it.season} E${it.number}" + (if (it.title.isNotBlank()) " · ${it.title}" else "") }.toTypedArray()
         val checked = BooleanArray(shown.size)
-        AlertDialog.Builder(this).setTitle("Sin ver en Trakt: ${pend.size}")
+        val dlg = AlertDialog.Builder(this).setTitle("Sin ver en Trakt: ${pend.size}")
             .setMultiChoiceItems(names, checked) { _, i, on -> checked[i] = on }
             .setPositiveButton("Marcar elegidos") { _, _ ->
                 val sel = shown.filterIndexed { i, _ -> checked[i] }
                 if (sel.isNotEmpty()) markEps(e, tid, sel, pend.size)
             }
             .setNeutralButton("Marcar todos (${pend.size})") { _, _ -> markEps(e, tid, pend, pend.size) }
-            .setNegativeButton("Salir", null).show()
+            .setNegativeButton("Salir", null).create()
+        // izquierda / derecha en la lista: salta directo a los botones de abajo
+        dlg.setOnShowListener {
+            dlg.listView.setOnKeyListener { _, code, ev ->
+                if (ev.action == KeyEvent.ACTION_DOWN && (code == KeyEvent.KEYCODE_DPAD_LEFT || code == KeyEvent.KEYCODE_DPAD_RIGHT)) {
+                    dlg.getButton(DialogInterface.BUTTON_POSITIVE).requestFocus(); true
+                } else false
+            }
+        }
+        dlg.show()
+    }
+
+    // Capítulo siguiente de las series manuales (lo calcula Trakt). Sin Trakt o sin la serie en Trakt: queda solo "Serie".
+    private fun refreshNext(s: Store) {
+        if (!Trakt.connected(s)) return
+        thread {
+            var changed = false
+            val a = s.manual()
+            var n = 0
+            for (i in 0 until a.length()) {
+                val o = a.getJSONObject(i)
+                if (o.optString("type") == "movie") continue
+                val id = o.getString("id")
+                val tmdb = id.drop(2).toIntOrNull() ?: continue
+                if (n++ >= 30) break
+                try {
+                    var tid = o.optInt("tid", 0)
+                    if (tid <= 0) tid = Trakt.showId(s, tmdb) ?: continue
+                    val nx = Trakt.next(s, tid)
+                    if (s.setNext(id, tid, nx?.first ?: 0, nx?.second ?: 0)) changed = true
+                } catch (x: Exception) { }
+            }
+            if (changed) refreshLocal()
+        }
     }
 
     private fun markEps(e: Entry, tid: Int, sel: List<Trakt.Pending>, total: Int) {
@@ -430,9 +464,13 @@ class MainActivity : Activity() {
             try {
                 val n = Trakt.markEpisodes(Store(this), tid, sel)
                 val quedan = total - sel.size
+                try {
+                    val nx = Trakt.next(Store(this), tid)
+                    Store(this).setNext(e.item.id, tid, nx?.first ?: 0, nx?.second ?: 0)
+                } catch (x: Exception) { }
                 runOnUiThread {
                     if (quedan <= 0 && n > 0) { toast("Registré $n capítulos. Ya no te falta ninguno: la saco de la estantería."); removeEntry(e) }
-                    else toast(if (n > 0) "Registré $n capítulos como vistos en Trakt" else "Trakt no registró ningún capítulo")
+                    else { toast(if (n > 0) "Registré $n capítulos como vistos en Trakt" else "Trakt no registró ningún capítulo"); refreshLocal() }
                 }
             } catch (x: Exception) { runOnUiThread { toast("Error: ${x.message}") } }
         }
@@ -596,6 +634,13 @@ class MainActivity : Activity() {
                 .put("type", if (hit.tv) "series" else "movie").put("poster", hit.poster ?: "")
                 .put("pkg", pkg).put("label", label).put("rt", if (inf.runtime > 0) inf.runtime else -1)
                 .put("yr", inf.year.ifBlank { hit.year }).put("last", System.currentTimeMillis()))
+            val st = Store(this)
+            if (hit.tv && Trakt.connected(st)) {   // serie nueva: el capítulo que dice Trakt; si no figura, queda solo "Serie"
+                try {
+                    val tid = Trakt.showId(st, hit.id)
+                    if (tid != null) { val nx = Trakt.next(st, tid); st.setNext("mt" + hit.id, tid, nx?.first ?: 0, nx?.second ?: 0) }
+                } catch (x: Exception) { }
+            }
             refreshLocal()
         }
     }

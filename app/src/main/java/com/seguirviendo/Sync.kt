@@ -88,8 +88,10 @@ object Sync {
         val a = s.manual(); val out = ArrayList<Item>()
         for (i in 0 until a.length()) {
             val o = a.getJSONObject(i)
+            val vs = o.optInt("s", 0); val ve = o.optInt("e", 0)
+            val vid = if (o.optString("type") != "movie" && vs > 0 && ve > 0) "tr:$vs:$ve" else null   // capítulo siguiente (Trakt)
             out.add(Item(o.getString("id"), o.optString("name"), o.optString("type"), o.optString("poster").takeIf { it.isNotBlank() },
-                null, 0L, o.optInt("rt", 0).coerceAtLeast(0).toLong(), o.optLong("last"), o.optString("yr")))   // en lo manual, "duration" guarda los minutos
+                vid, 0L, o.optInt("rt", 0).coerceAtLeast(0).toLong(), o.optLong("last"), o.optString("yr")))   // en lo manual, "duration" guarda los minutos
         }
         return out
     }

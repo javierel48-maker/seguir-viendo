@@ -89,6 +89,19 @@ class Store(private val c: Context) {
         for (i in 0 until a.length()) { val o = a.getJSONObject(i); if (o.getString("id") == id) { o.put("s", season).put("e", episode).put("last", System.currentTimeMillis()) } }
         saveManual(a)
     }
+    // Capítulo siguiente (según Trakt) de una serie manual; s=0 lo borra. Devuelve true si algo cambió.
+    fun setNext(id: String, tid: Int, s: Int, e: Int): Boolean {
+        val a = manual(); var changed = false
+        for (i in 0 until a.length()) {
+            val o = a.getJSONObject(i)
+            if (o.getString("id") != id) continue
+            if (tid > 0 && o.optInt("tid", 0) != tid) { o.put("tid", tid); changed = true }
+            if (s > 0 && e > 0) { if (o.optInt("s", 0) != s || o.optInt("e", 0) != e) { o.put("s", s).put("e", e); changed = true } }
+            else if (o.has("s") || o.has("e")) { o.remove("s"); o.remove("e"); changed = true }
+        }
+        if (changed) saveManual(a)
+        return changed
+    }
     fun hidden(): JSONObject = JSONObject(p.getString("h", "{}")!!)
     fun hide(id: String) { p.edit().putString("h", hidden().put(id, System.currentTimeMillis()).toString()).apply() }
 }
