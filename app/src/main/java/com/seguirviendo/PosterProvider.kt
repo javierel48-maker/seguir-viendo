@@ -21,7 +21,8 @@ class PosterProvider : ContentProvider() {
         val src = uri.getQueryParameter("u") ?: throw FileNotFoundException()
         if (!src.startsWith("https://") && !src.startsWith("http://")) throw FileNotFoundException()
         val ctx = context!!
-        val f = File(ctx.cacheDir, "pv12_" + src.hashCode() + ".png")
+        val nq = uri.getQueryParameter("n")?.toIntOrNull()   // null = sin sticker, -1 = pantalla vacía, N = faltan N capítulos
+        val f = File(ctx.cacheDir, "pv13_" + src.hashCode() + "_" + (nq ?: "x") + ".png")
         if (!f.exists()) {
             try {
                 val conn = URL(src.replaceFirst("http://", "https://")).openConnection()
@@ -47,6 +48,13 @@ class PosterProvider : ContentProvider() {
                 border.color = 0xFFF4F1E8.toInt()
                 c.drawRect(left - 3f, top, left + w + 3f, top + h, border)
                 c.drawBitmap(poster, null, RectF(left, top, left + w, top + h), Paint(Paint.FILTER_BITMAP_FLAG))
+                if (nq != null) {   // sticker sobre el casete, a la derecha del póster, abajo (no tapa la carátula)
+                    val txt = if (nq < 0) "" else "-$nq"
+                    var u = 360f * 0.26f / 34f
+                    val maxW = (640f - w) / 2f - 24f
+                    if (Lcd.size(txt, u).first > maxW) u = u * maxW / Lcd.size(txt, u).first
+                    Lcd.draw(c, 640f - 22f, 360f - 22f, txt, u)
+                }
                 val tmp = File(f.path + ".tmp")
                 tmp.outputStream().use { out.compress(Bitmap.CompressFormat.PNG, 100, it) }
                 tmp.renameTo(f)

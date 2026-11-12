@@ -8,13 +8,16 @@ import android.net.Uri
 import android.provider.BaseColumns
 import androidx.tvprovider.media.tv.*
 
-class Entry(val item: Item, val variant: String, val label: String, val rowTitle: String, val pkg: String? = null)
+class Entry(val item: Item, val variant: String, val label: String, val rowTitle: String, val pkg: String? = null, val left: Int = -2)
 
 object Sync {
     @Volatile var entries: List<Entry> = emptyList()
     @Volatile var lastItems: List<Item> = emptyList()   // lo que viene de Stremio
 
     // "(1976)" o "(1959-1964)": sin guiones sueltos al principio ni al final.
+    // Texto del sticker: null = sin sticker, "" = pantalla vacía, "-7" = faltan 7.
+    fun badgeText(e: Entry): String? = when { e.left == -2 || e.left == 0 -> null; e.left < 0 -> ""; else -> "-${e.left}" }
+
     fun fmtYear(y: String): String {
         val t = y.replace('–', '-').replace('—', '-').trim().trim('-').trim()
         return if (t.isEmpty()) "" else "($t)"
@@ -98,8 +101,9 @@ object Sync {
 
     private fun buildEntries(s: Store): List<Entry> {
         val meta = HashMap<String, Pair<String, String>>()
+        val mleft = HashMap<String, Int>()
         val a = s.manual()
-        for (i in 0 until a.length()) { val o = a.getJSONObject(i); meta[o.getString("id")] = o.optString("pkg") to o.optString("label") }
+        for (i in 0 until a.length()) { val o = a.getJSONObject(i); meta[o.getString("id")] = o.optString("pkg") to o.optString("label"); mleft[o.getString("id")] = o.optInt("left", -1) }
         if (lastItems.isEmpty()) lastItems = s.loadItems()
         val all = (lastItems + manualItems(s)).sortedByDescending { effective(s, it) }
         return all.map { x ->
@@ -108,13 +112,14 @@ object Sync {
             val m = meta[x.id]
             val svc = m?.second ?: "Stremio"
             val yr = fmtYear(x.year).let { if (it.isEmpty()) "" else " $it" }
-            Entry(x, "C", "${x.name} ($svc)", "${x.name}$yr$ep ($svc)", m?.first)
+            val left = if (x.type != "series") -2 else if (m != null) (mleft[x.id] ?: -1) else s.leftFor(x.id)   // -2 sin sticker, -1 pantalla vacía, 0 vista entera
+            Entry(x, "C", "${x.name} ($svc)", "${x.name}$yr$ep ($svc)", m?.first, left)
         }
     }
 
     private fun publishRow(c: Context, s: Store, es: List<Entry>): String {
         return try {
-            val sigNow = es.take(50).joinToString("|") { it.item.id + it.rowTitle + (it.item.poster ?: "") }
+            val sigNow = es.take(50).joinToString("|") { it.item.id + it.rowTitle + (it.item.poster ?: "") + it.left }
             if (s.channelId > 0 && sigNow == s.pubSig && System.currentTimeMillis() - s.pubTime < 6 * 3600 * 1000L) return " Fila sin cambios."
             val chId = channel(c, s)
             logo(c, chId)
@@ -131,7 +136,9 @@ object Sync {
                     .setPosterArtAspectRatio(TvContractCompat.PreviewPrograms.ASPECT_RATIO_16_9)
                     .setIntent(cardIntent(c, e))
                 if (parts != null && parts.size >= 3) b.setDescription("Temporada ${parts[1]} · Episodio ${parts[2]}")
-                x.poster?.let { p -> b.setPosterArtUri(Uri.parse("content://com.seguirviendo.posters/p.png?v=12&u=" + Uri.encode(p))) }
+                val bt = badgeText(e)
+                val nq = if (bt == null) "" else "&n=" + (if (bt.isEmpty()) "-1" else e.left.toString())
+                x.poster?.let { p -> b.setPosterArtUri(Uri.parse("content://com.seguirviendo.posters/p.png?v=13$nq&u=" + Uri.encode(p))) }
                 if (c.contentResolver.insert(TvContractCompat.PreviewPrograms.CONTENT_URI, b.build().toContentValues()) != null) n++
             }
             s.pubSig = sigNow; s.pubTime = System.currentTimeMillis()

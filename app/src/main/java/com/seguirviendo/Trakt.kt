@@ -7,6 +7,8 @@ import java.net.URL
 object Trakt {
     private const val API = "https://api.trakt.tv"
     class Res(val code: Int, val body: String)
+    class TraktHttp(val code: Int) : Exception("Trakt respondió $code")
+    class Prog(val next: Pair<Int, Int>?, val left: Int)
     class Dev(val deviceCode: String, val userCode: String, val url: String, val expires: Int, val interval: Int)
     class Pending(val season: Int, val number: Int, val title: String)
 
@@ -48,7 +50,7 @@ object Trakt {
         if (System.currentTimeMillis() > s.trExpires - 60000) refresh(s)
         var r = raw(method, path, body, s.trClient!!, s.trAccess)
         if (r.code == 401) { refresh(s); r = raw(method, path, body, s.trClient!!, s.trAccess) }
-        if (r.code >= 400) throw Exception("Trakt respondió ${r.code}")
+        if (r.code >= 400) throw TraktHttp(r.code)
         return r
     }
 
@@ -107,11 +109,15 @@ object Trakt {
     }
 
     // Capítulo siguiente que te toca ver, según Trakt (null si no hay o ya viste todo).
-    fun next(s: Store, traktId: Int): Pair<Int, Int>? {
-        val prog = JSONObject(call(s, "GET", "/shows/$traktId/progress/watched?hidden=false&specials=false").body)
-        val n = prog.optJSONObject("next_episode") ?: return null
-        val sn = n.optInt("season"); val en = n.optInt("number")
-        return if (sn > 0 && en > 0) Pair(sn, en) else null
+    fun next(s: Store, traktId: Int): Pair<Int, Int>? = progress(s, traktId.toString()).next
+
+    // Capítulo siguiente y cuántos faltan ver (emitidos). id = número de Trakt o código de IMDb (tt...).
+    fun progress(s: Store, id: String): Prog {
+        val prog = JSONObject(call(s, "GET", "/shows/$id/progress/watched?hidden=false&specials=false").body)
+        val left = (prog.optInt("aired", 0) - prog.optInt("completed", 0)).coerceAtLeast(0)
+        val n = prog.optJSONObject("next_episode")
+        val sn = n?.optInt("season") ?: 0; val en = n?.optInt("number") ?: 0
+        return Prog(if (sn > 0 && en > 0) Pair(sn, en) else null, left)
     }
 
     // Capítulos emitidos que NO figuran como vistos en Trakt (con la numeración y nombres de Trakt).

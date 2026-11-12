@@ -210,6 +210,7 @@ class MainActivity : Activity() {
             if (s.authKey == null) throw Exception("Falta iniciar sesión")
             statusMsg = Sync.run(this) { runOnUiThread { login.visibility = View.GONE; shelfFrame.visibility = View.VISIBLE; render() } }   // muestra en cuanto llega lo de Stremio
             runOnUiThread { login.visibility = View.GONE; shelfFrame.visibility = View.VISIBLE; render(); Sync.askRowOnce(this) }
+            refreshStremioCounts()
         } catch (x: Exception) { runOnUiThread { statusMsg = "Error: ${x.message}"; if (Sync.entries.isEmpty()) showEmpty() } }
     }
 
@@ -230,7 +231,7 @@ class MainActivity : Activity() {
 
     private fun render() {
         val es = Sync.entries
-        val nsig = es.joinToString("|") { it.item.id + it.label + (it.item.videoId ?: "") }
+        val nsig = es.joinToString("|") { it.item.id + it.label + (it.item.videoId ?: "") + it.left }
         if (nsig == sig && covers.isNotEmpty()) return   // nada cambió: no se rearma (evita el pestañeo)
         sig = nsig
         shelf.removeAllViews(); covers.clear(); ledges.clear(); selIdx = -1
@@ -297,6 +298,9 @@ class MainActivity : Activity() {
         area.addView(img, FrameLayout.LayoutParams(MP, MP))
         if (x.poster != null) poster(x.poster, img)
         else area.addView(tv(x.name, 11f, cream).apply { gravity = Gravity.CENTER }, FrameLayout.LayoutParams(MP, MP))
+        Sync.badgeText(e)?.let { bt ->   // sticker de capítulos que faltan, abajo a la derecha
+            area.addView(LcdView(this, bt, h * 0.138f / 34f), FrameLayout.LayoutParams(WC, WC, Gravity.BOTTOM or Gravity.END).apply { rightMargin = dp(2); bottomMargin = dp(2) })
+        }
         box.addView(area, LinearLayout.LayoutParams(MP, 0, 1f))
         box.addView(View(this).apply { setBackgroundColor(0xFFEEEEEE.toInt()) }, LinearLayout.LayoutParams(MP, dp(7)).apply { topMargin = dp(2) })
         box.setOnFocusChangeListener { v, f ->
@@ -434,6 +438,27 @@ class MainActivity : Activity() {
         dlg.show()
     }
 
+    // Cuántos capítulos faltan de las series de Stremio (consulta a Trakt por el código de IMDb; se recuerda 6 horas).
+    private fun refreshStremioCounts() {
+        val s = Store(this)
+        if (!Trakt.connected(s)) return
+        thread {
+            var changed = false; var n = 0
+            for (x in Sync.lastItems) {
+                if (x.type != "series" || !x.id.startsWith("tt")) continue
+                if (s.leftAge(x.id) < 6 * 3600 * 1000L) continue
+                if (n++ >= 25) break
+                try {
+                    val pr = Trakt.progress(s, x.id)
+                    if (s.leftFor(x.id) != pr.left) changed = true
+                    s.setLeft(x.id, pr.left)
+                } catch (e: Trakt.TraktHttp) { if (e.code == 404) s.setLeft(x.id, -1) }   // no está en Trakt: pantalla vacía, sin reintentar enseguida
+                catch (e: Exception) { }
+            }
+            if (changed) refreshLocal()
+        }
+    }
+
     // Capítulo siguiente de las series manuales (lo calcula Trakt). Sin Trakt o sin la serie en Trakt: queda solo "Serie".
     private fun refreshNext(s: Store) {
         if (!Trakt.connected(s)) return
@@ -450,8 +475,8 @@ class MainActivity : Activity() {
                 try {
                     var tid = o.optInt("tid", 0)
                     if (tid <= 0) tid = Trakt.showId(s, tmdb) ?: continue
-                    val nx = Trakt.next(s, tid)
-                    if (s.setNext(id, tid, nx?.first ?: 0, nx?.second ?: 0)) changed = true
+                    val pr = Trakt.progress(s, tid.toString())
+                    if (s.setNext(id, tid, pr.next?.first ?: 0, pr.next?.second ?: 0, pr.left)) changed = true
                 } catch (x: Exception) { }
             }
             if (changed) refreshLocal()
@@ -465,8 +490,8 @@ class MainActivity : Activity() {
                 val n = Trakt.markEpisodes(Store(this), tid, sel)
                 val quedan = total - sel.size
                 try {
-                    val nx = Trakt.next(Store(this), tid)
-                    Store(this).setNext(e.item.id, tid, nx?.first ?: 0, nx?.second ?: 0)
+                    val pr = Trakt.progress(Store(this), tid.toString())
+                    Store(this).setNext(e.item.id, tid, pr.next?.first ?: 0, pr.next?.second ?: 0, pr.left)
                 } catch (x: Exception) { }
                 runOnUiThread {
                     if (quedan <= 0 && n > 0) { toast("Registré $n capítulos. Ya no te falta ninguno: la saco de la estantería."); removeEntry(e) }
@@ -638,7 +663,7 @@ class MainActivity : Activity() {
             if (hit.tv && Trakt.connected(st)) {   // serie nueva: el capítulo que dice Trakt; si no figura, queda solo "Serie"
                 try {
                     val tid = Trakt.showId(st, hit.id)
-                    if (tid != null) { val nx = Trakt.next(st, tid); st.setNext("mt" + hit.id, tid, nx?.first ?: 0, nx?.second ?: 0) }
+                    if (tid != null) { val pr = Trakt.progress(st, tid.toString()); st.setNext("mt" + hit.id, tid, pr.next?.first ?: 0, pr.next?.second ?: 0, pr.left) }
                 } catch (x: Exception) { }
             }
             refreshLocal()

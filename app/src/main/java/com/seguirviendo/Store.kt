@@ -90,7 +90,7 @@ class Store(private val c: Context) {
         saveManual(a)
     }
     // Capítulo siguiente (según Trakt) de una serie manual; s=0 lo borra. Devuelve true si algo cambió.
-    fun setNext(id: String, tid: Int, s: Int, e: Int): Boolean {
+    fun setNext(id: String, tid: Int, s: Int, e: Int, left: Int = -1): Boolean {
         val a = manual(); var changed = false
         for (i in 0 until a.length()) {
             val o = a.getJSONObject(i)
@@ -98,9 +98,21 @@ class Store(private val c: Context) {
             if (tid > 0 && o.optInt("tid", 0) != tid) { o.put("tid", tid); changed = true }
             if (s > 0 && e > 0) { if (o.optInt("s", 0) != s || o.optInt("e", 0) != e) { o.put("s", s).put("e", e); changed = true } }
             else if (o.has("s") || o.has("e")) { o.remove("s"); o.remove("e"); changed = true }
+            if (left >= 0) { if (o.optInt("left", -1) != left) { o.put("left", left); changed = true } }
+            else if (o.has("left")) { o.remove("left"); changed = true }
         }
         if (changed) saveManual(a)
         return changed
+    }
+    // Capítulos que faltan de las series de Stremio (según Trakt), con la hora de la consulta.
+    fun leftFor(id: String): Int = try { JSONObject(p.getString("lc", "{}")!!).optJSONObject(id)?.optInt("n", -1) ?: -1 } catch (e: Exception) { -1 }
+    fun leftAge(id: String): Long = try {
+        val t = JSONObject(p.getString("lc", "{}")!!).optJSONObject(id)?.optLong("t", 0L) ?: 0L
+        if (t == 0L) Long.MAX_VALUE else System.currentTimeMillis() - t
+    } catch (e: Exception) { Long.MAX_VALUE }
+    fun setLeft(id: String, n: Int) {
+        val j = JSONObject(p.getString("lc", "{}")!!)
+        p.edit().putString("lc", j.put(id, JSONObject().put("n", n).put("t", System.currentTimeMillis())).toString()).apply()
     }
     fun hidden(): JSONObject = JSONObject(p.getString("h", "{}")!!)
     fun hide(id: String) { p.edit().putString("h", hidden().put(id, System.currentTimeMillis()).toString()).apply() }
