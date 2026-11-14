@@ -6,6 +6,7 @@ import android.content.Context
 object TraktSync {
     private const val MANUAL_FRESH = 3 * 60 * 1000L        // no repite una serie manual antes de 3 minutos
     private const val STREMIO_FRESH = 20 * 60 * 1000L      // ni una de Stremio antes de 20 minutos
+    private const val HOT_FRESH = 30 * 1000L               // las vistas hace poco, cada 30 segundos como mucho
 
     // Devuelve true si algo cambió (hay que reordenar / republicar).
     fun refresh(c: Context): Boolean {
@@ -34,9 +35,13 @@ object TraktSync {
         }
         // series de Stremio (por el código de IMDb)
         var n = 0
-        for (x in Sync.lastItems) {
+        var recent = 0
+        for (x in Sync.lastItems.sortedByDescending { it.last }) {
             if (x.type != "series" || !x.id.startsWith("tt")) continue
-            if (s.leftAge(x.id) < STREMIO_FRESH) continue
+            // Las últimas series que viste (o que Stremio marca más nuevas que lo guardado de Trakt) se consultan siempre, casi sin espera.
+            val hot = recent < 8 || x.last > s.leftWatched(x.id)
+            recent++
+            if (s.leftAge(x.id) < (if (hot) HOT_FRESH else STREMIO_FRESH)) continue
             if (n++ >= 25) break
             try {
                 val pr = Trakt.progress(s, x.id)
