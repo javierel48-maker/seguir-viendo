@@ -1,0 +1,250 @@
+package com.seguirviendo
+import android.app.Activity
+import android.content.Context
+import android.content.Intent
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.net.Uri
+import android.provider.BaseColumns
+import androidx.tvprovider.media.tv.*
+
+class Entry(val item: Item, val variant: String, val label: String, val rowTitle: String, val pkg: String? = null, val left: Int = -2)
+
+object Sync {
+    @Volatile var entries: List<Entry> = emptyList()
+    @Volatile var lastItems: List<Item> = emptyList()   // lo que viene de Stremio
+
+    // "(1976)" o "(1959-1964)": sin guiones sueltos al principio ni al final.
+    // Texto del sticker: null = sin sticker, "" = pantalla vacía, "-7" = faltan 7.
+    fun badgeText(e: Entry): String? = when { e.left == -2 || e.left == 0 -> null; e.left < 0 -> ""; else -> "-${e.left}" }
+
+    fun fmtYear(y: String): String {
+        val t = y.replace('–', '-').replace('—', '-').trim().trim('-').trim()
+        return if (t.isEmpty()) "" else "($t)"
+    }
+
+    fun url(t: String, i: String, v: String?, variant: String): String {
+        val base = "stremio:///detail/$t/$i"
+        val vid = v ?: if (t == "movie") i else ""
+        return if (vid.isEmpty()) base else "$base/${vid.replace(":", "%3A")}?autoPlay=true"
+    }
+
+    fun cardIntent(c: Context, e: Entry) = Intent(c, OpenActivity::class.java)
+        .putExtra("t", e.item.type).putExtra("i", e.item.id).putExtra("v", e.item.videoId).putExtra("x", e.variant).putExtra("p", e.pkg)
+
+    fun open(c: Context, e: Entry) = openLink(c, e.item.type, e.item.id, e.item.videoId, e.variant, e.pkg)
+
+    fun openLink(c: Context, t: String, i: String, v: String?, variant: String, pkg: String? = null, done: (() -> Unit)? = null) {
+        if (pkg != null && pkg.isBlank()) { done?.invoke(); return }   // "Otro": no abre nada
+        val appCtx = c.applicationContext
+        Thread { try { touch(appCtx, i) } catch (e: Exception) { } }.start()
+        if (pkg != null) {   // lo agregado a mano: abre la app de la plataforma elegida
+            c.packageManager.getLeanbackLaunchIntentForPackage(pkg)?.let { try { c.startActivity(it) } catch (e: Exception) { } }
+            done?.invoke(); return
+        }
+        try { (c.getSystemService(Context.ACTIVITY_SERVICE) as android.app.ActivityManager).killBackgroundProcesses("com.stremio.one") } catch (e: Exception) { }
+        android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+            try { c.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url(t, i, v, variant))).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)) }
+            catch (e: Exception) { c.packageManager.getLeanbackLaunchIntentForPackage("com.stremio.one")?.let { c.startActivity(it) } }
+            done?.invoke()
+        }, 450)
+    }
+
+    // Abre el buscador de Stremio (cierra Stremio y lo abre de cero, como con los títulos).
+    fun openStremioSearch(c: Context) {
+        try { (c.getSystemService(Context.ACTIVITY_SERVICE) as android.app.ActivityManager).killBackgroundProcesses("com.stremio.one") } catch (e: Exception) { }
+        android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+            try { c.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("stremio:///search?search=")).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)) }
+            catch (e: Exception) { c.packageManager.getLeanbackLaunchIntentForPackage("com.stremio.one")?.let { c.startActivity(it) } }
+        }, 450)
+    }
+
+    fun askRow(a: Activity) {
+        val id = Store(a).channelId
+        if (id > 0) try { TvContractCompat.requestChannelBrowsable(a, id) } catch (e: Exception) {}
+    }
+    fun askRowOnce(a: Activity) {
+        val s = Store(a)
+        if (!s.asked && s.channelId > 0) { s.asked = true; askRow(a) }
+    }
+
+    private fun logo(c: Context, id: Long) {
+        try {
+            val bmp = BitmapFactory.decodeResource(c.resources, R.drawable.icon)
+            ChannelLogoUtils.storeChannelLogo(c, id, Bitmap.createScaledBitmap(bmp, 256, 256, true))
+        } catch (e: Exception) { }
+    }
+
+    private fun channel(c: Context, s: Store): Long {
+        if (s.channelId > 0) return s.channelId
+        val bmp = Bitmap.createBitmap(160, 160, Bitmap.Config.ARGB_8888).apply { eraseColor(0xFF45B0E6.toInt()) }
+        val ch = PreviewChannel.Builder().setDisplayName("Seguir viendo (Javi Videoclub)")
+            .setAppLinkIntent(Intent(c, MainActivity::class.java)).setLogo(bmp).build()
+        val id = PreviewChannelHelper(c).publishDefaultChannel(ch)
+        s.channelId = id
+        return id
+    }
+
+    // "Último visto" real de cada título: Stremio, lo abierto acá o lo que dice Trakt.
+    private fun realFn(s: Store): (Item) -> Long {
+        val opened = s.opened(); val lc = s.leftJson()
+        return { x -> maxOf(x.last, opened.optLong(x.id, 0L), lc.optJSONObject(x.id)?.optLong("w", 0L) ?: 0L) }
+    }
+
+    fun realTime(s: Store, x: Item): Long = realFn(s)(x)
+
+    // Si moviste una caja a mano, vale la fecha inventada mientras no haya actividad nueva (r = lo real al momento de moverla).
+    // Apenas la ves de nuevo, lo real pasa a ser más nuevo y la caja vuelve al principio.
+    private fun effFn(s: Store): (Item) -> Long {
+        val real = realFn(s); val moved = s.moved()
+        return { x ->
+            val r = real(x)
+            val mo = moved.optJSONObject(x.id)
+            if (mo != null && r <= mo.optLong("r", 0L)) mo.optLong("v") else r
+        }
+    }
+
+    // Fecha inventada para que la caja `id` quede en la posición `target` (0 = primera) entre las demás.
+    fun virtualTime(s: Store, id: String, target: Int): Long {
+        val f = effFn(s)
+        if (lastItems.isEmpty()) lastItems = s.loadItems()
+        val others = (lastItems + manualItems(s)).filter { it.id != id }.map { f(it) }.sortedDescending()
+        if (others.isEmpty()) return System.currentTimeMillis()
+        return when {
+            target <= 0 -> others[0] + 1
+            target >= others.size -> (others.last() - 1).coerceAtLeast(1L)
+            else -> (others[target - 1] + others[target]) / 2
+        }
+    }
+
+    private fun manualItems(s: Store): List<Item> {
+        val a = s.manual(); val out = ArrayList<Item>()
+        for (i in 0 until a.length()) {
+            val o = a.getJSONObject(i)
+            val vs = o.optInt("s", 0); val ve = o.optInt("e", 0)
+            val vid = if (o.optString("type") != "movie" && vs > 0 && ve > 0) "tr:$vs:$ve" else null   // capítulo siguiente (Trakt)
+            out.add(Item(o.getString("id"), o.optString("name"), o.optString("type"), o.optString("poster").takeIf { it.isNotBlank() },
+                vid, 0L, o.optInt("rt", 0).coerceAtLeast(0).toLong(), o.optLong("last"), o.optString("yr")))   // en lo manual, "duration" guarda los minutos
+        }
+        return out
+    }
+
+    private fun buildEntries(s: Store): List<Entry> {
+        val meta = HashMap<String, Pair<String, String>>()
+        val mleft = HashMap<String, Int>()
+        val a = s.manual()
+        for (i in 0 until a.length()) { val o = a.getJSONObject(i); meta[o.getString("id")] = o.optString("pkg") to o.optString("label"); mleft[o.getString("id")] = o.optInt("left", -1) }
+        if (lastItems.isEmpty()) lastItems = s.loadItems()
+        val f = effFn(s)
+        val lc = s.leftJson()
+        val all = (lastItems + manualItems(s)).map { it to f(it) }.sortedByDescending { it.second }.map { it.first }
+        return all.map { x ->
+            val p = x.videoId?.split(":")
+            val ep = if (x.type != "movie" && p != null && p.size >= 3) " · T${p[1]} E${p[2]}" else ""
+            val m = meta[x.id]
+            val svc = m?.second ?: "Stremio"
+            val yr = fmtYear(x.year).let { if (it.isEmpty()) "" else " $it" }
+            val left = if (x.type != "series") -2 else if (m != null) (mleft[x.id] ?: -1) else (lc.optJSONObject(x.id)?.optInt("n", -1) ?: -1)   // -2 sin sticker, -1 pantalla vacía, 0 vista entera
+            Entry(x, "C", "${x.name} ($svc)", "${x.name}$yr$ep ($svc)", m?.first, left)
+        }
+    }
+
+    private fun publishRow(c: Context, s: Store, es: List<Entry>): String {
+        return try {
+            val sigNow = es.take(50).joinToString("|") { it.item.id + it.rowTitle + (it.item.poster ?: "") + it.left }
+            if (s.channelId > 0 && sigNow == s.pubSig && System.currentTimeMillis() - s.pubTime < 6 * 3600 * 1000L) return " Fila sin cambios."
+            val chId = channel(c, s)
+            logo(c, chId)
+            c.contentResolver.query(TvContractCompat.buildPreviewProgramsUriForChannel(chId), arrayOf(BaseColumns._ID), null, null, null)?.use {
+                while (it.moveToNext()) c.contentResolver.delete(TvContractCompat.buildPreviewProgramUri(it.getLong(0)), null, null)
+            }
+            var n = 0
+            es.take(50).forEachIndexed { i, e ->
+                val x = e.item
+                val parts = x.videoId?.split(":")
+                val b = PreviewProgram.Builder().setChannelId(chId)
+                    .setType(if (x.type == "movie") TvContractCompat.PreviewPrograms.TYPE_MOVIE else TvContractCompat.PreviewPrograms.TYPE_CLIP)
+                    .setTitle(e.rowTitle).setInternalProviderId(x.id).setWeight(1000 - i)
+                    .setPosterArtAspectRatio(TvContractCompat.PreviewPrograms.ASPECT_RATIO_16_9)
+                    .setIntent(cardIntent(c, e))
+                if (parts != null && parts.size >= 3) b.setDescription("Temporada ${parts[1]} · Episodio ${parts[2]}")
+                val bt = badgeText(e)
+                val nq = if (bt == null) "" else "&n=" + (if (bt.isEmpty()) "-1" else e.left.toString())
+                x.poster?.let { p -> b.setPosterArtUri(Uri.parse("content://com.seguirviendo.posters/p.png?v=13$nq&u=" + Uri.encode(p))) }
+                if (c.contentResolver.insert(TvContractCompat.PreviewPrograms.CONTENT_URI, b.build().toContentValues()) != null) n++
+            }
+            s.pubSig = sigNow; s.pubTime = System.currentTimeMillis()
+            " Fila propia: $n."
+        } catch (e: Exception) { " Fila propia con error: ${e.message}." }
+    }
+
+    // Arma la estantería con lo ya guardado, sin red ni publicar la fila (arranque rápido).
+    fun load(c: Context) { entries = buildEntries(Store(c)) }
+
+    // Reordena y republica la fila sin tocar la red (cambios locales: abrir, agregar, borrar, marcar vista).
+    fun rebuild(c: Context) {
+        val s = Store(c)
+        val es = buildEntries(s)
+        entries = es
+        publishRow(c, s, es)
+    }
+
+    // Al abrir un título pasa al principio al instante (sin esperar a Stremio) y se actualiza la fila.
+    fun touch(c: Context, id: String) {
+        val s = Store(c)
+        s.markOpened(id)
+        if (lastItems.isEmpty()) lastItems = s.loadItems()
+        if (lastItems.isEmpty() && s.authKey != null) { try { run(c) } catch (e: Exception) { rebuild(c) }; return }
+        rebuild(c)
+    }
+
+    fun run(c: Context, early: (() -> Unit)? = null): String {
+        val s = Store(c)
+        val key = s.authKey ?: return "Falta iniciar sesión"
+        val lib = Stremio.inProgress(key)
+        val hid = s.hidden()
+        val tk = s.tmdbKey
+        val base = lib.items.filter { it.last > hid.optLong(it.id, -1) }
+        // Pasada 1 (rápida): solo con los años que ya se conocen. Se muestra enseguida.
+        val first = base.map { x ->
+            if (x.year.isNotBlank() || !x.id.startsWith("tt")) x
+            else { val y = s.yearCache(x.id); if (y.isNullOrBlank()) x else Item(x.id, x.name, x.type, x.poster, x.videoId, x.offset, x.duration, x.last, y) }
+        }
+        lastItems = first
+        s.saveItems(first)
+        entries = buildEntries(s)
+        early?.invoke()
+        // Pasada 2 (lenta): completa los años que faltan desde TMDB (hasta 25 por vez) y los recuerda.
+        var pedidos = 0
+        var cambio = false
+        val list = first.map { x ->
+            if (x.year.isNotBlank() || !x.id.startsWith("tt") || s.yearCache(x.id) != null || tk.isNullOrBlank() || pedidos >= 25) x
+            else {
+                pedidos++
+                val y = try { Tmdb.yearForImdb(tk, x.id, x.type != "movie") } catch (e: Exception) { null }
+                if (y != null) s.setYearCache(x.id, y)
+                if (y.isNullOrBlank()) x else { cambio = true; Item(x.id, x.name, x.type, x.poster, x.videoId, x.offset, x.duration, x.last, y) }
+            }
+        }
+        if (cambio) { lastItems = list; s.saveItems(list) }
+        val es = buildEntries(s)
+        entries = es
+        val msg = "Biblioteca: ${lib.total}. A medias: ${list.size}." + publishRow(c, s, es)
+        try {
+            c.contentResolver.delete(TvContractCompat.WatchNextPrograms.CONTENT_URI, null, null)
+            for (x in list.take(20)) {
+                val b = WatchNextProgram.Builder()
+                    .setType(if (x.type == "movie") TvContractCompat.WatchNextPrograms.TYPE_MOVIE else TvContractCompat.WatchNextPrograms.TYPE_CLIP)
+                    .setWatchNextType(TvContractCompat.WatchNextPrograms.WATCH_NEXT_TYPE_CONTINUE)
+                    .setLastEngagementTimeUtcMillis(x.last).setTitle(x.name).setInternalProviderId(x.id)
+                    .setLastPlaybackPositionMillis(x.offset.toInt())
+                    .setPosterArtAspectRatio(TvContractCompat.WatchNextPrograms.ASPECT_RATIO_2_3)
+                    .setIntent(cardIntent(c, Entry(x, "C", x.name, x.name)))
+                if (x.duration > 0) b.setDurationMillis(x.duration.toInt())
+                x.poster?.let { p -> b.setPosterArtUri(Uri.parse(p)) }
+                c.contentResolver.insert(TvContractCompat.WatchNextPrograms.CONTENT_URI, b.build().toContentValues())
+            }
+        } catch (e: Exception) { }
+        return msg
+    }
+}
