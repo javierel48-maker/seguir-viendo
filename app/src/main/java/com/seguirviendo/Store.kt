@@ -109,7 +109,8 @@ class Store(private val c: Context) {
     fun leftWatched(id: String): Long = leftJson().optJSONObject(id)?.optLong("w", 0L) ?: 0L
     // Posiciones movidas a mano: id -> "fecha de último visto" inventada, que vale hasta que lo vuelvas a ver.
     fun moved(): JSONObject = try { JSONObject(p.getString("mv", "{}")!!) } catch (e: Exception) { JSONObject() }
-    fun setMoved(id: String, v: Long) { p.edit().putString("mv", moved().put(id, v).toString()).apply() }
+    fun setMoved(id: String, v: Long, r: Long) { p.edit().putString("mv", moved().put(id, JSONObject().put("v", v).put("r", r)).toString()).apply() }
+    fun setMovedRaw(id: String, o: JSONObject) { p.edit().putString("mv", moved().put(id, o).toString()).apply() }
     fun clearMoved(id: String) { val j = moved(); j.remove(id); p.edit().putString("mv", j.toString()).apply() }
     fun leftFor(id: String): Int = try { JSONObject(p.getString("lc", "{}")!!).optJSONObject(id)?.optInt("n", -1) ?: -1 } catch (e: Exception) { -1 }
     fun leftAge(id: String): Long = try {

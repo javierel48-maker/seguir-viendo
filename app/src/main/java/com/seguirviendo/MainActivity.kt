@@ -56,7 +56,7 @@ class MainActivity : Activity() {
     private lateinit var bar: ProgressBar
     private var statusMsg = ""
     private var moving: String? = null
-    private var movePrev = -1L
+    private var movePrev: String? = null
     private var syncing = false
     private var localPending = false
     private var sig = ""
@@ -288,7 +288,7 @@ class MainActivity : Activity() {
         val avail = resources.displayMetrics.widthPixels - dp(48 + 12 + 36 + 8)
         val gap = dp(8)
         val w = minOf(dp(100), (avail - gap * (COLS - 1)) / COLS)
-        val h = (w * 1.45f).toInt() + stripH(w) - dp(7)
+        val h = (w * 1.45f).toInt() + stripH(w) - dp(9)
         for (r in 0 until rows) {
             val row = LinearLayout(this).apply {
                 orientation = LinearLayout.HORIZONTAL; clipChildren = false; clipToPadding = false
@@ -358,7 +358,7 @@ class MainActivity : Activity() {
         Sync.badgeText(e)?.let { bt ->
             strip.addView(LcdView(this, bt, stripU(w)), FrameLayout.LayoutParams(WC, WC, Gravity.END or Gravity.CENTER_VERTICAL).apply { rightMargin = dp(3) })
         }
-        box.addView(strip, LinearLayout.LayoutParams(MP, stripH(w)).apply { topMargin = dp(2) })
+        box.addView(strip, LinearLayout.LayoutParams(MP, stripH(w)))   // sin hueco entre la carátula y la franja (el marco celeste no se corta)
         box.setOnFocusChangeListener { v, f ->
             v.background = coverBg(f, e.item.id == moving)
             if (f) {
@@ -387,7 +387,7 @@ class MainActivity : Activity() {
     // ---- Mover una caja (no altera el orden automático: al volver a verla, sube al principio) ----
     private fun startMove(e: Entry) {
         moving = e.item.id
-        movePrev = Store(this).moved().optLong(e.item.id, -1L)
+        movePrev = Store(this).moved().optJSONObject(e.item.id)?.toString()
         val i = Sync.entries.indexOfFirst { it.item.id == e.item.id }
         if (i in covers.indices) covers[i].background = coverBg(true, true)
         showInfo(e)
@@ -401,7 +401,7 @@ class MainActivity : Activity() {
         val tgt = (cur + delta).coerceIn(0, es.size - 1)
         if (tgt == cur) return
         val s = Store(this)
-        s.setMoved(id, Sync.virtualTime(s, id, tgt))
+        s.setMoved(id, Sync.virtualTime(s, id, tgt), Sync.realTime(s, es[cur].item))
         Sync.load(this)
         render(id)
     }
@@ -409,7 +409,7 @@ class MainActivity : Activity() {
     private fun endMove(cancel: Boolean) {
         val id = moving ?: return
         val s = Store(this)
-        if (cancel) { if (movePrev >= 0) s.setMoved(id, movePrev) else s.clearMoved(id) }
+        if (cancel) { val pv = movePrev; if (pv != null) s.setMovedRaw(id, JSONObject(pv)) else s.clearMoved(id) }
         moving = null
         Sync.load(this)
         sig = ""

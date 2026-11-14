@@ -6,7 +6,7 @@
     <uses-feature android:name="android.software.leanback" android:required="false"/>
     <uses-feature android:name="android.hardware.touchscreen" android:required="false"/>
     <queries><intent><action android:name="android.intent.action.MAIN"/><category android:name="android.intent.category.LEANBACK_LAUNCHER"/></intent></queries>
-    <application android:label="Seguir viendo (Javi Videoclub) v25" android:allowBackup="true" android:icon="@drawable/icon" android:banner="@drawable/banner" android:theme="@android:style/Theme.DeviceDefault.NoActionBar">
+    <application android:label="Seguir viendo (Javi Videoclub) v26" android:allowBackup="true" android:icon="@drawable/icon" android:banner="@drawable/banner" android:theme="@android:style/Theme.DeviceDefault.NoActionBar">
         <activity android:name=".MainActivity" android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN"/>

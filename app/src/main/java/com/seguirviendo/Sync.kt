@@ -85,14 +85,22 @@ object Sync {
         return id
     }
 
-    // "Último visto" de cada título: lo real (Stremio, lo abierto acá, lo que dice Trakt) o, si lo moviste a mano, la fecha inventada
-    // que vale hasta que lo vuelvas a ver. Los datos se leen una sola vez (rápido al ordenar).
+    // "Último visto" real de cada título: Stremio, lo abierto acá o lo que dice Trakt.
+    private fun realFn(s: Store): (Item) -> Long {
+        val opened = s.opened(); val lc = s.leftJson()
+        return { x -> maxOf(x.last, opened.optLong(x.id, 0L), lc.optJSONObject(x.id)?.optLong("w", 0L) ?: 0L) }
+    }
+
+    fun realTime(s: Store, x: Item): Long = realFn(s)(x)
+
+    // Si moviste una caja a mano, vale la fecha inventada mientras no haya actividad nueva (r = lo real al momento de moverla).
+    // Apenas la ves de nuevo, lo real pasa a ser más nuevo y la caja vuelve al principio.
     private fun effFn(s: Store): (Item) -> Long {
-        val opened = s.opened(); val moved = s.moved(); val lc = s.leftJson()
+        val real = realFn(s); val moved = s.moved()
         return { x ->
-            val real = maxOf(x.last, opened.optLong(x.id, 0L), lc.optJSONObject(x.id)?.optLong("w", 0L) ?: 0L)
-            val mv = moved.optLong(x.id, -1L)
-            if (mv >= 0 && real <= mv) mv else real
+            val r = real(x)
+            val mo = moved.optJSONObject(x.id)
+            if (mo != null && r <= mo.optLong("r", 0L)) mo.optLong("v") else r
         }
     }
 
