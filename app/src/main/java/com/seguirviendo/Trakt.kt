@@ -8,7 +8,7 @@ object Trakt {
     private const val API = "https://api.trakt.tv"
     class Res(val code: Int, val body: String)
     class TraktHttp(val code: Int) : Exception("Trakt respondió $code")
-    class Prog(val next: Pair<Int, Int>?, val left: Int)
+    class Prog(val next: Pair<Int, Int>?, val left: Int, val lastWatched: Long = 0L)
     class Dev(val deviceCode: String, val userCode: String, val url: String, val expires: Int, val interval: Int)
     class Pending(val season: Int, val number: Int, val title: String)
 
@@ -117,7 +117,9 @@ object Trakt {
         val left = (prog.optInt("aired", 0) - prog.optInt("completed", 0)).coerceAtLeast(0)
         val n = prog.optJSONObject("next_episode")
         val sn = n?.optInt("season") ?: 0; val en = n?.optInt("number") ?: 0
-        return Prog(if (sn > 0 && en > 0) Pair(sn, en) else null, left)
+        val lw = prog.optString("last_watched_at").takeIf { it.isNotBlank() && it != "null" }
+            ?.let { try { java.time.Instant.parse(it).toEpochMilli() } catch (e: Exception) { 0L } } ?: 0L
+        return Prog(if (sn > 0 && en > 0) Pair(sn, en) else null, left, lw)
     }
 
     // Capítulos emitidos que NO figuran como vistos en Trakt (con la numeración y nombres de Trakt).

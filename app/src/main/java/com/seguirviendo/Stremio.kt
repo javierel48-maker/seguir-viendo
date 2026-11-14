@@ -14,6 +14,7 @@ object Stremio {
     private fun post(path: String, body: JSONObject): JSONObject {
         val c = URL("https://api.strem.io/api/$path").openConnection() as HttpURLConnection
         c.requestMethod = "POST"; c.doOutput = true
+        c.connectTimeout = 10000; c.readTimeout = 20000   // sin internet no se queda esperando para siempre
         c.setRequestProperty("Content-Type", "application/json")
         c.outputStream.use { it.write(body.toString().toByteArray()) }
         val txt = (if (c.responseCode < 400) c.inputStream else c.errorStream).bufferedReader().readText()

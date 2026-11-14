@@ -85,7 +85,29 @@ object Sync {
         return id
     }
 
-    private fun effective(s: Store, x: Item): Long = maxOf(x.last, s.opened().optLong(x.id, 0L))
+    // "Último visto" de cada título: lo real (Stremio, lo abierto acá, lo que dice Trakt) o, si lo moviste a mano, la fecha inventada
+    // que vale hasta que lo vuelvas a ver. Los datos se leen una sola vez (rápido al ordenar).
+    private fun effFn(s: Store): (Item) -> Long {
+        val opened = s.opened(); val moved = s.moved(); val lc = s.leftJson()
+        return { x ->
+            val real = maxOf(x.last, opened.optLong(x.id, 0L), lc.optJSONObject(x.id)?.optLong("w", 0L) ?: 0L)
+            val mv = moved.optLong(x.id, -1L)
+            if (mv >= 0 && real <= mv) mv else real
+        }
+    }
+
+    // Fecha inventada para que la caja `id` quede en la posición `target` (0 = primera) entre las demás.
+    fun virtualTime(s: Store, id: String, target: Int): Long {
+        val f = effFn(s)
+        if (lastItems.isEmpty()) lastItems = s.loadItems()
+        val others = (lastItems + manualItems(s)).filter { it.id != id }.map { f(it) }.sortedDescending()
+        if (others.isEmpty()) return System.currentTimeMillis()
+        return when {
+            target <= 0 -> others[0] + 1
+            target >= others.size -> (others.last() - 1).coerceAtLeast(1L)
+            else -> (others[target - 1] + others[target]) / 2
+        }
+    }
 
     private fun manualItems(s: Store): List<Item> {
         val a = s.manual(); val out = ArrayList<Item>()
@@ -105,14 +127,16 @@ object Sync {
         val a = s.manual()
         for (i in 0 until a.length()) { val o = a.getJSONObject(i); meta[o.getString("id")] = o.optString("pkg") to o.optString("label"); mleft[o.getString("id")] = o.optInt("left", -1) }
         if (lastItems.isEmpty()) lastItems = s.loadItems()
-        val all = (lastItems + manualItems(s)).sortedByDescending { effective(s, it) }
+        val f = effFn(s)
+        val lc = s.leftJson()
+        val all = (lastItems + manualItems(s)).map { it to f(it) }.sortedByDescending { it.second }.map { it.first }
         return all.map { x ->
             val p = x.videoId?.split(":")
             val ep = if (x.type != "movie" && p != null && p.size >= 3) " · T${p[1]} E${p[2]}" else ""
             val m = meta[x.id]
             val svc = m?.second ?: "Stremio"
             val yr = fmtYear(x.year).let { if (it.isEmpty()) "" else " $it" }
-            val left = if (x.type != "series") -2 else if (m != null) (mleft[x.id] ?: -1) else s.leftFor(x.id)   // -2 sin sticker, -1 pantalla vacía, 0 vista entera
+            val left = if (x.type != "series") -2 else if (m != null) (mleft[x.id] ?: -1) else (lc.optJSONObject(x.id)?.optInt("n", -1) ?: -1)   // -2 sin sticker, -1 pantalla vacía, 0 vista entera
             Entry(x, "C", "${x.name} ($svc)", "${x.name}$yr$ep ($svc)", m?.first, left)
         }
     }

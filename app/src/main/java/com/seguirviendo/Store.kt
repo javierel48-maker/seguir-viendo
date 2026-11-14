@@ -105,14 +105,20 @@ class Store(private val c: Context) {
         return changed
     }
     // Capítulos que faltan de las series de Stremio (según Trakt), con la hora de la consulta.
+    fun leftJson(): JSONObject = try { JSONObject(p.getString("lc", "{}")!!) } catch (e: Exception) { JSONObject() }
+    fun leftWatched(id: String): Long = leftJson().optJSONObject(id)?.optLong("w", 0L) ?: 0L
+    // Posiciones movidas a mano: id -> "fecha de último visto" inventada, que vale hasta que lo vuelvas a ver.
+    fun moved(): JSONObject = try { JSONObject(p.getString("mv", "{}")!!) } catch (e: Exception) { JSONObject() }
+    fun setMoved(id: String, v: Long) { p.edit().putString("mv", moved().put(id, v).toString()).apply() }
+    fun clearMoved(id: String) { val j = moved(); j.remove(id); p.edit().putString("mv", j.toString()).apply() }
     fun leftFor(id: String): Int = try { JSONObject(p.getString("lc", "{}")!!).optJSONObject(id)?.optInt("n", -1) ?: -1 } catch (e: Exception) { -1 }
     fun leftAge(id: String): Long = try {
         val t = JSONObject(p.getString("lc", "{}")!!).optJSONObject(id)?.optLong("t", 0L) ?: 0L
         if (t == 0L) Long.MAX_VALUE else System.currentTimeMillis() - t
     } catch (e: Exception) { Long.MAX_VALUE }
-    fun setLeft(id: String, n: Int) {
+    fun setLeft(id: String, n: Int, lw: Long = 0L) {
         val j = JSONObject(p.getString("lc", "{}")!!)
-        p.edit().putString("lc", j.put(id, JSONObject().put("n", n).put("t", System.currentTimeMillis())).toString()).apply()
+        p.edit().putString("lc", j.put(id, JSONObject().put("n", n).put("t", System.currentTimeMillis()).put("w", lw)).toString()).apply()
     }
     fun hidden(): JSONObject = JSONObject(p.getString("h", "{}")!!)
     fun hide(id: String) { p.edit().putString("h", hidden().put(id, System.currentTimeMillis()).toString()).apply() }

@@ -55,6 +55,10 @@ class MainActivity : Activity() {
     private lateinit var info3: TextView
     private lateinit var bar: ProgressBar
     private var statusMsg = ""
+    private var moving: String? = null
+    private var movePrev = -1L
+    private var syncing = false
+    private var localPending = false
     private var sig = ""
     private val covers = ArrayList<View>()
     private val cache = HashMap<String, Bitmap>()
@@ -76,6 +80,7 @@ class MainActivity : Activity() {
 
     override fun onCreate(b: Bundle?) {
         super.onCreate(b)
+        Diag.mark(this, "onCreate")
         val s = Store(this)
         val ver = try { packageManager.getPackageInfo(packageName, 0).versionName ?: "" } catch (e: Exception) { "" }
         val title = SpannableString("Seguir viendo (Javi Videoclub) $ver").apply {
@@ -96,8 +101,11 @@ class MainActivity : Activity() {
         btnAdd.setOnClickListener { startAdd() }
         btnMore.setOnClickListener {
             val tr = if (Trakt.connected(Store(this))) "Trakt: conectado (volver a conectar)" else "Conectar Trakt"
-            AlertDialog.Builder(this).setItems(arrayOf("Sincronizar ahora", "Activar fila en el inicio", "Clave de TMDB", tr, "Verificar backup", "Restaurar backup")) { _, w ->
-                when (w) { 0 -> sync("", ""); 1 -> Sync.askRow(this); 2 -> askKey { }; 3 -> connectTrakt(); 4 -> verifyBackup(); else -> restoreBackup() }
+            AlertDialog.Builder(this).setItems(arrayOf("Sincronizar ahora", "Activar fila en el inicio", "Clave de TMDB", tr, "Verificar backup", "Restaurar backup", "Diagnóstico de arranque")) { _, w ->
+                when (w) {
+                    0 -> sync("", ""); 1 -> Sync.askRow(this); 2 -> askKey { }; 3 -> connectTrakt(); 4 -> verifyBackup(); 5 -> restoreBackup()
+                    else -> AlertDialog.Builder(this).setTitle("Diagnóstico de arranque").setMessage(Diag.report(this)).setPositiveButton("Cerrar", null).show()
+                }
             }.show()
         }
         header.addView(btnSearch, LinearLayout.LayoutParams(WC, WC).apply { rightMargin = dp(10) })
@@ -146,7 +154,7 @@ class MainActivity : Activity() {
         val showShelf = hasKey || s.manual().length() > 0
         login.visibility = if (showShelf) View.GONE else View.VISIBLE
         shelfFrame.visibility = if (showShelf) View.VISIBLE else View.GONE
-        info1.text = if (hasKey) "Buscando tus series y películas…" else ""
+        info1.text = if (hasKey) "Cargando tu estantería…" else ""
 
         setContentView(LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL; setBackgroundColor(night); setPadding(dp(24), dp(14), dp(24), dp(14))
@@ -155,31 +163,46 @@ class MainActivity : Activity() {
             addView(content, LinearLayout.LayoutParams(MP, 0, 1f))
             addView(wood, LinearLayout.LayoutParams(MP, WC).apply { topMargin = dp(8) })
         })
+        val net = Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build()
         WorkManager.getInstance(this).enqueueUniquePeriodicWork("sync", ExistingPeriodicWorkPolicy.UPDATE,
-            PeriodicWorkRequestBuilder<SyncWorker>(15, TimeUnit.MINUTES).build())
+            PeriodicWorkRequestBuilder<SyncWorker>(15, TimeUnit.MINUTES).setConstraints(net).build())
     }
 
     override fun onResume() {
         super.onResume()
+        Diag.mark(this, "onResume")
         val s = Store(this)
         backfillInfo()
-        refreshNext(s)
         offerRestoreOnStart(s)
-        if (s.authKey != null) {
-            if (Sync.entries.isNotEmpty()) render()   // muestra ya el orden nuevo (lo último abierto, primero)
-            else loadLocal()                           // arranque en frío: muestra al instante lo guardado
-            sync("", "")
-        } else if (s.manual().length() > 0) refreshLocal()
+        // La lista guardada se muestra en el acto, sin esperar a la red.
+        if (Sync.entries.isEmpty() && (s.authKey != null || s.manual().length() > 0)) Sync.load(this)
+        if (Sync.entries.isNotEmpty()) {
+            login.visibility = View.GONE; shelfFrame.visibility = View.VISIBLE; render()
+            Diag.mark(this, "lista guardada en pantalla (${Sync.entries.size} cajas)")
+        }
+        if (s.authKey != null) sync("", "") else if (s.manual().length() > 0) refreshLocal()
+        refreshTrakt()
         thread { try { Backup.save(applicationContext) } catch (e: Exception) { } }   // backup al abrir
     }
 
-    // Con la lista guardada: sin red y sin tocar la fila del inicio.
-    private fun loadLocal() {
-        thread { Sync.load(this); runOnUiThread { if (Sync.entries.isNotEmpty()) { login.visibility = View.GONE; shelfFrame.visibility = View.VISIBLE; render() } } }
+    // Capítulo siguiente, cuántos faltan y cuándo viste algo por última vez (Trakt), en segundo plano.
+    private fun refreshTrakt() {
+        thread { try { if (TraktSync.refresh(applicationContext)) { Diag.mark(this, "Trakt actualizado"); refreshLocal() } } catch (e: Exception) { } }
     }
 
     // Navegación con el control: por posición exacta en la grilla, sin depender de la geometría de Android.
     override fun dispatchKeyEvent(ev: KeyEvent): Boolean {
+        if (moving != null) {   // modo "Mover": flechas mueven la caja, OK la suelta, Atrás cancela
+            if (ev.action == KeyEvent.ACTION_DOWN) when (ev.keyCode) {
+                KeyEvent.KEYCODE_DPAD_LEFT -> moveBy(-1)
+                KeyEvent.KEYCODE_DPAD_RIGHT -> moveBy(1)
+                KeyEvent.KEYCODE_DPAD_UP -> moveBy(-COLS)
+                KeyEvent.KEYCODE_DPAD_DOWN -> moveBy(COLS)
+                KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER -> endMove(false)
+                KeyEvent.KEYCODE_BACK -> endMove(true)
+            }
+            return true
+        }
         if (ev.action == KeyEvent.ACTION_DOWN && covers.isNotEmpty()) {
             if (ev.keyCode == KeyEvent.KEYCODE_DPAD_DOWN && (btnSearch.isFocused || btnAdd.isFocused || btnMore.isFocused)) { covers[0].requestFocus(); return true }
             val cur = covers.indexOfFirst { it.isFocused }
@@ -203,20 +226,43 @@ class MainActivity : Activity() {
         return super.dispatchKeyEvent(ev)
     }
 
-    private fun sync(e: String, p: String) = thread {
-        val s = Store(this)
-        try {
-            if (e.isNotBlank()) s.authKey = Stremio.login(e, p)
-            if (s.authKey == null) throw Exception("Falta iniciar sesión")
-            statusMsg = Sync.run(this) { runOnUiThread { login.visibility = View.GONE; shelfFrame.visibility = View.VISIBLE; render() } }   // muestra en cuanto llega lo de Stremio
-            runOnUiThread { login.visibility = View.GONE; shelfFrame.visibility = View.VISIBLE; render(); Sync.askRowOnce(this) }
-            refreshStremioCounts()
-        } catch (x: Exception) { runOnUiThread { statusMsg = "Error: ${x.message}"; if (Sync.entries.isEmpty()) showEmpty() } }
+    private fun sync(e: String, p: String, attempt: Int = 0) {
+        if (e.isBlank() && syncing) return
+        syncing = true
+        thread {
+            val s = Store(this)
+            try {
+                if (e.isNotBlank()) s.authKey = Stremio.login(e, p)
+                if (s.authKey == null) throw Exception("Falta iniciar sesión")
+                statusMsg = Sync.run(this) {
+                    Diag.mark(this, "Stremio respondió")
+                    runOnUiThread { login.visibility = View.GONE; shelfFrame.visibility = View.VISIBLE; render() }   // muestra en cuanto llega lo de Stremio
+                }
+                Diag.mark(this, "sincronización terminada")
+                syncing = false
+                runOnUiThread { login.visibility = View.GONE; shelfFrame.visibility = View.VISIBLE; render(); Sync.askRowOnce(this) }
+                refreshTrakt()
+            } catch (x: Exception) {
+                syncing = false
+                runOnUiThread {
+                    statusMsg = "Error: ${x.message}"
+                    if (e.isBlank() && s.authKey != null && attempt < 6) {   // seguramente todavía no hay internet: reintenta solo
+                        if (Sync.entries.isEmpty()) info1.text = "Esperando internet…"
+                        android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({ sync("", "", attempt + 1) }, 6000L)
+                    } else if (Sync.entries.isEmpty()) showEmpty()
+                }
+            }
+        }
     }
 
-    // Cambios locales (agregar, borrar, marcar vista): reordena y actualiza sin red.
+    // Cambios locales (agregar, borrar, marcar vista): reordena y actualiza sin red. Junta varios pedidos seguidos en uno.
     private fun refreshLocal() {
-        thread { Sync.rebuild(this); runOnUiThread { login.visibility = View.GONE; shelfFrame.visibility = View.VISIBLE; render() } }
+        if (localPending) return
+        localPending = true
+        android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+            localPending = false
+            thread { Sync.rebuild(this); runOnUiThread { login.visibility = View.GONE; shelfFrame.visibility = View.VISIBLE; render() } }
+        }, 350L)
     }
 
     private fun showEmpty() {
@@ -229,7 +275,10 @@ class MainActivity : Activity() {
         layoutParams = LinearLayout.LayoutParams(MP, dp(9))
     }
 
-    private fun render() {
+    private fun stripU(w: Int) = w * 1.45f * 0.138f / 34f            // tamaño del reloj
+    private fun stripH(w: Int) = (38f * stripU(w)).toInt() + dp(3)   // franja negra de abajo: el reloj entra adentro
+
+    private fun render(focusId: String? = null) {
         val es = Sync.entries
         val nsig = es.joinToString("|") { it.item.id + it.label + (it.item.videoId ?: "") + it.left }
         if (nsig == sig && covers.isNotEmpty()) return   // nada cambió: no se rearma (evita el pestañeo)
@@ -239,7 +288,7 @@ class MainActivity : Activity() {
         val avail = resources.displayMetrics.widthPixels - dp(48 + 12 + 36 + 8)
         val gap = dp(8)
         val w = minOf(dp(100), (avail - gap * (COLS - 1)) / COLS)
-        val h = (w * 1.45f).toInt()
+        val h = (w * 1.45f).toInt() + stripH(w) - dp(7)
         for (r in 0 until rows) {
             val row = LinearLayout(this).apply {
                 orientation = LinearLayout.HORIZONTAL; clipChildren = false; clipToPadding = false
@@ -253,12 +302,17 @@ class MainActivity : Activity() {
             }
             shelf.addView(row, LinearLayout.LayoutParams(MP, WC)); val lg = ledge(); ledges.add(lg); shelf.addView(lg)
         }
-        if (es.isEmpty()) showEmpty() else covers.firstOrNull()?.requestFocus()
+        if (es.isEmpty()) showEmpty() else {
+            val fi = if (focusId != null) es.indexOfFirst { it.item.id == focusId } else -1
+            val k = if (fi >= 0) fi else 0
+            covers[k].requestFocus(); showInfo(es[k])
+        }
         shelf.post { updateClip() }
     }
 
-    private fun coverBg(f: Boolean) = GradientDrawable().apply {
-        cornerRadius = dp(3).toFloat(); setColor(0xFF111111.toInt()); setStroke(dp(if (f) 4 else 1), if (f) sky else 0xFF1A1A1A.toInt())
+    private fun coverBg(f: Boolean, mv: Boolean = false) = GradientDrawable().apply {
+        cornerRadius = dp(3).toFloat(); setColor(0xFF111111.toInt())
+        setStroke(dp(if (f || mv) 4 else 1), if (mv) magenta else if (f) sky else 0xFF1A1A1A.toInt())
     }
 
     private fun select(i: Int) { selIdx = i; updateClip() }
@@ -290,7 +344,7 @@ class MainActivity : Activity() {
         val x = e.item
         val box = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL; isFocusable = true; isClickable = true
-            setPadding(dp(2), dp(2), dp(2), dp(2)); background = coverBg(false)
+            setPadding(dp(2), dp(2), dp(2), dp(2)); background = coverBg(false, e.item.id == moving)
             pivotX = w / 2f; pivotY = h.toFloat()   // crece hacia arriba, apoyada en la repisa
         }
         val area = FrameLayout(this).apply { setBackgroundColor(0xFF2A2F36.toInt()) }
@@ -298,13 +352,15 @@ class MainActivity : Activity() {
         area.addView(img, FrameLayout.LayoutParams(MP, MP))
         if (x.poster != null) poster(x.poster, img)
         else area.addView(tv(x.name, 11f, cream).apply { gravity = Gravity.CENTER }, FrameLayout.LayoutParams(MP, MP))
-        Sync.badgeText(e)?.let { bt ->   // sticker de capítulos que faltan, abajo a la derecha
-            area.addView(LcdView(this, bt, h * 0.138f / 34f), FrameLayout.LayoutParams(WC, WC, Gravity.BOTTOM or Gravity.END).apply { rightMargin = dp(2); bottomMargin = dp(2) })
-        }
         box.addView(area, LinearLayout.LayoutParams(MP, 0, 1f))
-        box.addView(View(this).apply { setBackgroundColor(0xFFEEEEEE.toInt()) }, LinearLayout.LayoutParams(MP, dp(7)).apply { topMargin = dp(2) })
+        // franja negra de abajo; el reloj de capítulos que faltan va adentro, sin tapar la carátula
+        val strip = FrameLayout(this).apply { setBackgroundColor(0xFF06101F.toInt()) }
+        Sync.badgeText(e)?.let { bt ->
+            strip.addView(LcdView(this, bt, stripU(w)), FrameLayout.LayoutParams(WC, WC, Gravity.END or Gravity.CENTER_VERTICAL).apply { rightMargin = dp(3) })
+        }
+        box.addView(strip, LinearLayout.LayoutParams(MP, stripH(w)).apply { topMargin = dp(2) })
         box.setOnFocusChangeListener { v, f ->
-            v.background = coverBg(f)
+            v.background = coverBg(f, e.item.id == moving)
             if (f) {
                 v.animate().scaleX(1.35f).scaleY(1.35f).translationY(-dp(8).toFloat()).translationZ(dp(12).toFloat()).setDuration(120).start()
                 select(idx); showInfo(e); ensureVisible(v)
@@ -322,9 +378,43 @@ class MainActivity : Activity() {
             if (e.item.type == "movie") { opts.add("Marcar como visto en Trakt"); acts.add { traktMovie(e) } }
             else { opts.add("Capítulos pendientes en Trakt"); acts.add { traktSeries(e) } }
         }
+        opts.add("Mover"); acts.add { startMove(e) }
         opts.add("Borrar de la estantería"); acts.add { removeEntry(e) }
         opts.add("Salir"); acts.add { }
         AlertDialog.Builder(this).setTitle(e.item.name).setItems(opts.toTypedArray()) { _, w -> acts[w]() }.show()
+    }
+
+    // ---- Mover una caja (no altera el orden automático: al volver a verla, sube al principio) ----
+    private fun startMove(e: Entry) {
+        moving = e.item.id
+        movePrev = Store(this).moved().optLong(e.item.id, -1L)
+        val i = Sync.entries.indexOfFirst { it.item.id == e.item.id }
+        if (i in covers.indices) covers[i].background = coverBg(true, true)
+        showInfo(e)
+    }
+
+    private fun moveBy(delta: Int) {
+        val id = moving ?: return
+        val es = Sync.entries
+        val cur = es.indexOfFirst { it.item.id == id }
+        if (cur < 0) return
+        val tgt = (cur + delta).coerceIn(0, es.size - 1)
+        if (tgt == cur) return
+        val s = Store(this)
+        s.setMoved(id, Sync.virtualTime(s, id, tgt))
+        Sync.load(this)
+        render(id)
+    }
+
+    private fun endMove(cancel: Boolean) {
+        val id = moving ?: return
+        val s = Store(this)
+        if (cancel) { if (movePrev >= 0) s.setMoved(id, movePrev) else s.clearMoved(id) }
+        moving = null
+        Sync.load(this)
+        sig = ""
+        render(id)
+        thread { Sync.rebuild(this) }   // publica el orden nuevo en la fila del inicio
     }
 
     private fun removeEntry(e: Entry) {
@@ -380,7 +470,12 @@ class MainActivity : Activity() {
 
     private fun notFound(e: Entry) {
         AlertDialog.Builder(this).setTitle("No se encontró en Trakt")
-            .setMessage("\"${e.item.name}\" no figura en Trakt (puede ser muy nueva o poco común). Queda en la estantería; si querés, cargala vos desde trakt.tv.")
+            .setMessage("\"${e.item.name}\" todavía no figura en Trakt.\n\n" +
+                "Trakt toma sus datos de TMDB y solo importa títulos con información en inglés. Para que aparezca:\n" +
+                "1) En themoviedb.org (con tu cuenta gratuita) agregá o completá el título y la descripción en inglés.\n" +
+                "2) Esperá hasta 24 horas.\n" +
+                "3) Si a las 48 horas no está, pedí que lo vinculen en support.trakt.tv.\n\n" +
+                "Cuando aparezca, volvé a elegir la opción desde la caja.")
             .setPositiveButton("Dejarla", null).setNegativeButton("Quitar igual de la estantería") { _, _ -> removeEntry(e) }.show()
     }
 
@@ -438,51 +533,6 @@ class MainActivity : Activity() {
         dlg.show()
     }
 
-    // Cuántos capítulos faltan de las series de Stremio (consulta a Trakt por el código de IMDb; se recuerda 6 horas).
-    private fun refreshStremioCounts() {
-        val s = Store(this)
-        if (!Trakt.connected(s)) return
-        thread {
-            var changed = false; var n = 0
-            for (x in Sync.lastItems) {
-                if (x.type != "series" || !x.id.startsWith("tt")) continue
-                if (s.leftAge(x.id) < 6 * 3600 * 1000L) continue
-                if (n++ >= 25) break
-                try {
-                    val pr = Trakt.progress(s, x.id)
-                    if (s.leftFor(x.id) != pr.left) changed = true
-                    s.setLeft(x.id, pr.left)
-                } catch (e: Trakt.TraktHttp) { if (e.code == 404) s.setLeft(x.id, -1) }   // no está en Trakt: pantalla vacía, sin reintentar enseguida
-                catch (e: Exception) { }
-            }
-            if (changed) refreshLocal()
-        }
-    }
-
-    // Capítulo siguiente de las series manuales (lo calcula Trakt). Sin Trakt o sin la serie en Trakt: queda solo "Serie".
-    private fun refreshNext(s: Store) {
-        if (!Trakt.connected(s)) return
-        thread {
-            var changed = false
-            val a = s.manual()
-            var n = 0
-            for (i in 0 until a.length()) {
-                val o = a.getJSONObject(i)
-                if (o.optString("type") == "movie") continue
-                val id = o.getString("id")
-                val tmdb = id.drop(2).toIntOrNull() ?: continue
-                if (n++ >= 30) break
-                try {
-                    var tid = o.optInt("tid", 0)
-                    if (tid <= 0) tid = Trakt.showId(s, tmdb) ?: continue
-                    val pr = Trakt.progress(s, tid.toString())
-                    if (s.setNext(id, tid, pr.next?.first ?: 0, pr.next?.second ?: 0, pr.left)) changed = true
-                } catch (x: Exception) { }
-            }
-            if (changed) refreshLocal()
-        }
-    }
-
     private fun markEps(e: Entry, tid: Int, sel: List<Trakt.Pending>, total: Int) {
         toast("Registrando en Trakt…")
         thread {
@@ -492,6 +542,7 @@ class MainActivity : Activity() {
                 try {
                     val pr = Trakt.progress(Store(this), tid.toString())
                     Store(this).setNext(e.item.id, tid, pr.next?.first ?: 0, pr.next?.second ?: 0, pr.left)
+                    Store(this).setLeft(e.item.id, pr.left, pr.lastWatched)
                 } catch (x: Exception) { }
                 runOnUiThread {
                     if (quedan <= 0 && n > 0) { toast("Registré $n capítulos. Ya no te falta ninguno: la saco de la estantería."); removeEntry(e) }
@@ -691,6 +742,11 @@ class MainActivity : Activity() {
 
     private fun showInfo(e: Entry) {
         val x = e.item
+        if (moving == x.id) {
+            info1.text = "Moviendo: ${x.name}"; info2.text = "Flechas: mover · OK: soltar acá · Atrás: cancelar"
+            info3.text = ""; bar.visibility = View.INVISIBLE
+            return
+        }
         val svc = e.label.removePrefix(x.name).trim()
         val yr = Sync.fmtYear(x.year).let { if (it.isEmpty()) "" else " $it" }
         val sp = SpannableString(x.name + yr + " " + svc)
@@ -709,14 +765,25 @@ class MainActivity : Activity() {
         } else { bar.visibility = View.INVISIBLE; info3.text = "" }
     }
 
-    private fun poster(u: String, img: ImageView) {
+    // Las portadas se guardan en el disco: al arrancar se leen de ahí, sin esperar a internet. Si falla, reintenta.
+    private fun poster(u: String, img: ImageView, attempt: Int = 0) {
         cache[u]?.let { img.setImageBitmap(it); return }
         pool.execute {
             try {
+                val f = java.io.File(cacheDir, "pc_" + u.hashCode() + ".img")
+                if (!f.exists() || f.length() == 0L) {
+                    val conn = URL(u.replaceFirst("http://", "https://")).openConnection()
+                    conn.connectTimeout = 10000; conn.readTimeout = 15000
+                    val tmp = java.io.File(f.path + ".tmp")
+                    conn.getInputStream().use { i -> tmp.outputStream().use { o -> i.copyTo(o) } }
+                    tmp.renameTo(f)
+                }
                 val opts = BitmapFactory.Options().apply { inSampleSize = 2 }   // a mitad de tamaño: con 450 cajas cuida la memoria
-                val bmp = URL(u.replaceFirst("http://", "https://")).openStream().use { BitmapFactory.decodeStream(it, null, opts) }
-                if (bmp != null) runOnUiThread { cache[u] = bmp; img.setImageBitmap(bmp) }
-            } catch (e: Exception) { }
+                val bmp = BitmapFactory.decodeFile(f.path, opts)
+                if (bmp != null) runOnUiThread { cache[u] = bmp; img.setImageBitmap(bmp); Diag.cover(this) } else f.delete()
+            } catch (e: Exception) {
+                if (attempt < 4) img.postDelayed({ poster(u, img, attempt + 1) }, 5000L)   // todavía sin internet: prueba de nuevo
+            }
         }
     }
 }
