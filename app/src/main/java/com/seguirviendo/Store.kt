@@ -79,6 +79,23 @@ class Store(private val c: Context) {
         for (i in 0 until a.length()) if (a.getJSONObject(i).getString("id") != id) n.put(a.getJSONObject(i))
         saveManual(n, true)
     }
+    // Navegador propio: páginas permitidas y enlace guardado de cada serie.
+    fun webSites(): JSONArray = JSONArray(p.getString("ws", "[]")!!)
+    fun addWebSite(url: String) {
+        val a = webSites()
+        for (i in 0 until a.length()) if (a.getString(i) == url) return
+        a.put(url); p.edit().putString("ws", a.toString()).apply()
+    }
+    fun removeWebSite(idx: Int) {
+        val a = webSites(); val n = JSONArray()
+        for (i in 0 until a.length()) if (i != idx) n.put(a.getString(i))
+        p.edit().putString("ws", n.toString()).apply()
+    }
+    fun setWebLink(id: String, url: String) {
+        val a = manual()
+        for (i in 0 until a.length()) { val o = a.getJSONObject(i); if (o.getString("id") == id) o.put("wurl", url) }
+        saveManual(a)
+    }
     fun setInfo(id: String, rt: Int, yr: String) {
         val a = manual()
         for (i in 0 until a.length()) { val o = a.getJSONObject(i); if (o.getString("id") == id) o.put("rt", rt).put("yr", yr) }

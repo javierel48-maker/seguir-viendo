@@ -8,6 +8,16 @@ object TraktSync {
     private const val STREMIO_FRESH = 20 * 60 * 1000L      // ni una de Stremio antes de 20 minutos
     private const val HOT_FRESH = 30 * 1000L               // las vistas hace poco, cada 30 segundos como mucho
 
+    // true si Trakt dice que viste algo hace poco y Stremio todavía muestra una fecha vieja (hay que volver a leer Stremio).
+    fun stale(c: Context): Boolean {
+        val s = Store(c)
+        if (!Trakt.connected(s)) return false
+        val now = System.currentTimeMillis()
+        return Sync.lastItems.any { x ->
+            x.type == "series" && x.id.startsWith("tt") && s.leftWatched(x.id).let { w -> w > x.last + 2 * 60 * 1000L && now - w < 30 * 60 * 1000L }
+        }
+    }
+
     // Devuelve true si algo cambió (hay que reordenar / republicar).
     fun refresh(c: Context): Boolean {
         val s = Store(c)

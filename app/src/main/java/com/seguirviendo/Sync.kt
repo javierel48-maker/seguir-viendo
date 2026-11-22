@@ -38,6 +38,10 @@ object Sync {
         if (pkg != null && pkg.isBlank()) { done?.invoke(); return }   // "Otro": no abre nada
         val appCtx = c.applicationContext
         Thread { try { touch(appCtx, i) } catch (e: Exception) { } }.start()
+        if (pkg != null && pkg.startsWith("web:")) {   // navegador propio con las páginas permitidas
+            try { c.startActivity(Intent(c, WebActivity::class.java).putExtra("i", i).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) } catch (e: Exception) { }
+            done?.invoke(); return
+        }
         if (pkg != null) {   // lo agregado a mano: abre la app de la plataforma elegida
             c.packageManager.getLeanbackLaunchIntentForPackage(pkg)?.let { try { c.startActivity(it) } catch (e: Exception) { } }
             done?.invoke(); return

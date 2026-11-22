@@ -101,9 +101,9 @@ class MainActivity : Activity() {
         btnAdd.setOnClickListener { startAdd() }
         btnMore.setOnClickListener {
             val tr = if (Trakt.connected(Store(this))) "Trakt: conectado (volver a conectar)" else "Conectar Trakt"
-            AlertDialog.Builder(this).setItems(arrayOf("Sincronizar ahora", "Activar fila en el inicio", "Clave de TMDB", tr, "Verificar backup", "Restaurar backup", "Diagnóstico de arranque")) { _, w ->
+            AlertDialog.Builder(this).setItems(arrayOf("Sincronizar ahora", "Activar fila en el inicio", "Clave de TMDB", tr, "Verificar backup", "Restaurar backup", "Páginas del navegador web", "Diagnóstico de arranque")) { _, w ->
                 when (w) {
-                    0 -> sync("", ""); 1 -> Sync.askRow(this); 2 -> askKey { }; 3 -> connectTrakt(); 4 -> verifyBackup(); 5 -> restoreBackup()
+                    0 -> sync("", ""); 1 -> Sync.askRow(this); 2 -> askKey { }; 3 -> connectTrakt(); 4 -> verifyBackup(); 5 -> restoreBackup(); 6 -> manageSites()
                     else -> AlertDialog.Builder(this).setTitle("Diagnóstico de arranque").setMessage(Diag.report(this)).setPositiveButton("Cerrar", null).show()
                 }
             }.show()
@@ -186,8 +186,20 @@ class MainActivity : Activity() {
     }
 
     // Capítulo siguiente, cuántos faltan y cuándo viste algo por última vez (Trakt), en segundo plano.
+    @Volatile private var traktBusy = false
     private fun refreshTrakt() {
-        thread { try { if (TraktSync.refresh(applicationContext)) { Diag.mark(this, "Trakt actualizado"); refreshLocal() } } catch (e: Exception) { } }
+        if (traktBusy) return
+        traktBusy = true
+        thread {
+            try {
+                val ch = TraktSync.refresh(applicationContext)
+                var tries = 0
+                // Trakt ya sabe lo último que viste y Stremio todavía no: espera y vuelve a leer Stremio para que cambien juntos.
+                while (TraktSync.stale(applicationContext) && tries < 2) { Thread.sleep(45000); Sync.run(applicationContext); tries++ }
+                if (ch || tries > 0) { Diag.mark(this, "Trakt actualizado"); refreshLocal() }
+            } catch (e: Exception) { }
+            traktBusy = false
+        }
     }
 
     // Navegación con el control: por posición exacta en la grilla, sin depender de la geometría de Android.
@@ -695,13 +707,53 @@ class MainActivity : Activity() {
 
     // Opciones fijas y en este orden; "Otro" no abre ninguna lista.
     private fun pickApp(hit: Tmdb.Hit) {
-        val names = arrayOf("Netflix", "Flow", "YouTube", "Mercado Play", "Otro")
+        val names = arrayOf("Netflix", "Flow", "YouTube", "Mercado Play", "Navegador web", "Otro")
         AlertDialog.Builder(this).setTitle("¿Dónde la vas a ver?").setItems(names) { _, i ->
-            addManual(hit, if (names[i] == "Otro") "" else packageFor(names[i]), names[i])
+            if (names[i] == "Navegador web") pickSite(hit)
+            else addManual(hit, if (names[i] == "Otro") "" else packageFor(names[i]), names[i])
         }.setNegativeButton("Salir", null).show()
     }
 
-    private fun addManual(hit: Tmdb.Hit, pkg: String, label: String) {
+    // Navegador propio: elegís una de las páginas permitidas (se cargan en Más… → Páginas del navegador web).
+    private fun pickSite(hit: Tmdb.Hit) {
+        val a = Store(this).webSites()
+        val urls = ArrayList<String>()
+        for (i in 0 until a.length()) urls.add(a.getString(i))
+        if (urls.isEmpty()) {
+            AlertDialog.Builder(this).setTitle("Navegador web").setMessage("Todavía no hay páginas permitidas. Agregá una y después elegila para esta serie.")
+                .setPositiveButton("Agregar una página") { _, _ -> addSite { pickSite(hit) } }.setNegativeButton("Cancelar", null).show()
+            return
+        }
+        AlertDialog.Builder(this).setTitle("¿En qué página?").setItems(urls.map { WebUtil.host(it) }.toTypedArray()) { _, i ->
+            addManual(hit, "web:" + WebUtil.host(urls[i]), "Web", urls[i])
+        }.setNegativeButton("Cancelar", null).show()
+    }
+
+    private fun manageSites() {
+        val s = Store(this)
+        val a = s.webSites()
+        val urls = ArrayList<String>()
+        for (i in 0 until a.length()) urls.add(a.getString(i))
+        val items = (urls.map { WebUtil.host(it) } + "+ Agregar una página").toTypedArray()
+        AlertDialog.Builder(this).setTitle("Páginas permitidas del navegador").setItems(items) { _, w ->
+            if (w == urls.size) addSite { manageSites() }
+            else AlertDialog.Builder(this).setTitle(items[w]).setMessage("¿Sacarla de la lista? Las cajas que ya la usan siguen funcionando.")
+                .setPositiveButton("Sacar") { _, _ -> s.removeWebSite(w); manageSites() }.setNegativeButton("Cancelar", null).show()
+        }.setNegativeButton("Cerrar", null).show()
+    }
+
+    private fun addSite(after: () -> Unit) {
+        val et = EditText(this).apply { hint = "ejemplo: pagina.com"; inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI }
+        AlertDialog.Builder(this).setTitle("Dirección de la página").setView(et)
+            .setPositiveButton("Agregar") { _, _ ->
+                val u = WebUtil.norm(et.text.toString())
+                if (u == null) Toast.makeText(this, "Esa dirección no parece válida", Toast.LENGTH_LONG).show()
+                else { Store(this).addWebSite(u); Toast.makeText(this, "Agregada: " + WebUtil.host(u), Toast.LENGTH_SHORT).show() }
+                after()
+            }.setNegativeButton("Cancelar", null).show()
+    }
+
+    private fun addManual(hit: Tmdb.Hit, pkg: String, label: String, site: String = "") {
         if (lleno()) return
         val key = Store(this).tmdbKey
         thread {
@@ -709,7 +761,8 @@ class MainActivity : Activity() {
             Store(this).addManual(JSONObject().put("id", (if (hit.tv) "mt" else "mm") + hit.id).put("name", hit.title)
                 .put("type", if (hit.tv) "series" else "movie").put("poster", hit.poster ?: "")
                 .put("pkg", pkg).put("label", label).put("rt", if (inf.runtime > 0) inf.runtime else -1)
-                .put("yr", inf.year.ifBlank { hit.year }).put("last", System.currentTimeMillis()))
+                .put("yr", inf.year.ifBlank { hit.year }).put("last", System.currentTimeMillis())
+                .also { o -> if (site.isNotBlank()) o.put("wsite", site) })
             val st = Store(this)
             if (hit.tv && Trakt.connected(st)) {   // serie nueva: el capítulo que dice Trakt; si no figura, queda solo "Serie"
                 try {
