@@ -701,13 +701,13 @@ class MainActivity : Activity() {
     }
 
     private fun packageFor(label: String): String {
-        val kw = when (label) { "Netflix" -> "netflix"; "Flow" -> "flow"; "YouTube" -> "youtube"; "Mercado Play" -> "mercado"; else -> return "" }
+        val kw = when (label) { "Netflix" -> "netflix"; "Flow" -> "flow"; "YouTube" -> "youtube"; "Mercado Play" -> "mercado"; "Zoomaníacos" -> "zoo"; else -> return "" }
         return installedApps().firstOrNull { it.second.lowercase().contains(kw) }?.first ?: ""
     }
 
     // Opciones fijas y en este orden; "Otro" no abre ninguna lista.
     private fun pickApp(hit: Tmdb.Hit) {
-        val names = arrayOf("Netflix", "Flow", "YouTube", "Mercado Play", "Navegador web", "Otro")
+        val names = arrayOf("Netflix", "Flow", "YouTube", "Mercado Play", "Zoomaníacos", "Navegador web", "Otro")
         AlertDialog.Builder(this).setTitle("¿Dónde la vas a ver?").setItems(names) { _, i ->
             if (names[i] == "Navegador web") pickSite(hit)
             else addManual(hit, if (names[i] == "Otro") "" else packageFor(names[i]), names[i])

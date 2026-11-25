@@ -65,4 +65,40 @@ object AdBlock {
         "s.textContent='ins.adsbygoogle,.adsbygoogle,[id^=\"google_ads\"],iframe[src*=\"doubleclick\"],iframe[src*=\"googlesyndication\"]," +
         "iframe[src*=\"adsterra\"],iframe[src*=\"exoclick\"],[id^=\"div-gpt-ad\"],.ad-banner,.ads-banner,.popup-ad{display:none!important}';" +
         "document.documentElement.appendChild(s);window.open=function(){return null};}catch(e){}})();"
+
+    // Intenta pasar a pantalla completa los videos de la página apenas empiezan (solo si el navegador lo permite).
+    const val FS_JS = "(function(){if(window.__svfs)return;window.__svfs=1;document.addEventListener('play',function(e){" +
+        "try{var v=e.target;if(v&&v.requestFullscreen&&!document.fullscreenElement){v.requestFullscreen().catch(function(){});}}catch(x){}},true);})();"
+
+    // Oculta las capas que quedan fijas sobre la página (carteles de publicidad), menos las que contienen un video.
+    val CLEAN_OVERLAYS_JS = """
+(function(){var n=0,W=innerWidth,H=innerHeight;
+document.querySelectorAll('body *').forEach(function(e){try{
+var cs=getComputedStyle(e);
+if(cs.position!=='fixed'||cs.display==='none'||cs.visibility==='hidden')return;
+if(e.hasAttribute('data-svmax')||e.id==='__svmaxbg'||e.tagName==='VIDEO'||e.querySelector('video'))return;
+var r=e.getBoundingClientRect();
+if(r.width*r.height<W*H*0.02)return;
+e.style.setProperty('display','none','important');n++;}catch(x){}});
+return n;})()
+"""
+
+    // Estira el video o reproductor más grande para que ocupe toda la pantalla; si ya está estirado, lo devuelve a su lugar.
+    val MAX_JS = """
+(function(){
+var P=document.querySelector('[data-svmax]');
+if(P){P.style.cssText=P.getAttribute('data-svmax');P.removeAttribute('data-svmax');
+var b=document.getElementById('__svmaxbg');if(b)b.remove();
+document.documentElement.style.overflow=window.__svov||'';return 'off';}
+var c=[].slice.call(document.querySelectorAll('video,iframe')).map(function(e){var r=e.getBoundingClientRect();return {e:e,a:r.width*r.height};})
+.filter(function(o){return o.a>20000;}).sort(function(x,y){return y.a-x.a;});
+if(!c.length)return 'none';
+var e=c[0].e;e.setAttribute('data-svmax',e.style.cssText||' ');
+var bg=document.createElement('div');bg.id='__svmaxbg';
+bg.style.cssText='position:fixed;left:0;top:0;width:100vw;height:100vh;background:#000;z-index:2147483646';
+document.body.appendChild(bg);
+e.style.cssText='position:fixed!important;left:0!important;top:0!important;width:100vw!important;height:100vh!important;max-width:none!important;max-height:none!important;z-index:2147483647!important;background:#000!important;border:0!important;margin:0!important;transform:none!important';
+window.__svov=document.documentElement.style.overflow;document.documentElement.style.overflow='hidden';
+return 'on';})()
+"""
 }

@@ -1,5 +1,7 @@
 package com.seguirviendo
 import android.app.Activity
+import android.app.AlertDialog
+import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
@@ -30,6 +32,7 @@ import android.widget.LinearLayout
 import android.widget.Toast
 import org.json.JSONObject
 import java.io.ByteArrayInputStream
+import java.util.concurrent.ConcurrentHashMap
 
 // Navegador propio: solo abre las páginas de la lista, bloquea anuncios y ventanas emergentes, y se maneja con las flechas (cursor).
 class WebActivity : Activity() {
@@ -50,6 +53,9 @@ class WebActivity : Activity() {
     private var fullCb: WebChromeClient.CustomViewCallback? = null
     private val ui = Handler(Looper.getMainLooper())
     private var ready = false
+    private val seen = ConcurrentHashMap<String, Boolean>()   // servidores que cargó la página (true = bloqueado)
+    private var maxed = false
+    private var lastOk = 0L
 
     private fun dp(n: Int) = (n * resources.displayMetrics.density).toInt()
     private fun say(t: String) { Toast.makeText(this, t, Toast.LENGTH_SHORT).show() }
@@ -70,12 +76,12 @@ class WebActivity : Activity() {
         for (k in 0 until ws.length()) allowed.add(WebUtil.host(ws.getString(k)))
         buildUi()
         ready = true
-        web.loadUrl(siteUrl)
+        web.loadUrl(if (seriesUrl.isNotBlank()) seriesUrl else siteUrl)   // si ya marcaste la serie, abre directo ahí
     }
 
     private fun button(text: String, color: Int, act: () -> Unit): Button {
         val bt = Button(this)
-        bt.text = text; bt.isAllCaps = false; bt.textSize = 14f; bt.setTextColor(color)
+        bt.text = text; bt.isAllCaps = false; bt.textSize = 13f; bt.setTextColor(color)
         bt.isFocusable = false
         bt.background = GradientDrawable().apply { setColor(0xFF06101F.toInt()); setStroke(dp(2), color); cornerRadius = dp(8).toFloat() }
         bt.setOnClickListener { act() }
@@ -99,10 +105,13 @@ class WebActivity : Activity() {
         val sky = 0xFF19E3FF.toInt(); val yellow = 0xFFFFD23F.toInt(); val magenta = 0xFFFF2E93.toInt()
         button("Atrás", sky) { if (web.canGoBack()) web.goBack() else say("No hay más atrás") }
         button("Inicio", sky) { web.loadUrl(siteUrl) }
-        btnSerie = button("Ir a la serie", if (seriesUrl.isBlank()) 0xFF7A8AB8.toInt() else yellow) {
+        btnSerie = button("Serie", if (seriesUrl.isBlank()) 0xFF7A8AB8.toInt() else yellow) {
             if (seriesUrl.isBlank()) say("Todavía no marcaste el enlace de esta serie") else web.loadUrl(seriesUrl)
         }
-        button("Marcar esta página como la serie", yellow) { saveLink() }
+        button("Marcar serie", yellow) { saveLink() }
+        button("Maximizar", sky) { toggleMax() }
+        button("Limpiar", sky) { cleanOverlays() }
+        button("Dominios", sky) { showHosts() }
         button("Salir", magenta) { finish() }
 
         content.addView(bar, LinearLayout.LayoutParams(MP, dp(56)))
@@ -155,11 +164,18 @@ class WebActivity : Activity() {
             }
 
             override fun shouldInterceptRequest(v: WebView, r: WebResourceRequest): WebResourceResponse? {
-                if (AdBlock.blocked(r.url)) return WebResourceResponse("text/plain", "utf-8", ByteArrayInputStream(ByteArray(0)))
+                val h = r.url.host ?: ""
+                val bl = AdBlock.blocked(r.url)
+                if (h.isNotEmpty() && seen.size < 300) seen[h] = bl || (seen[h] == true)
+                if (bl) return WebResourceResponse("text/plain", "utf-8", ByteArrayInputStream(ByteArray(0)))
                 return null
             }
 
-            override fun onPageFinished(v: WebView, url: String?) { v.evaluateJavascript(AdBlock.CLEAN_JS, null) }
+            override fun onPageStarted(v: WebView, url: String?, icon: Bitmap?) {
+                if (maxed) { maxed = false; bar.visibility = View.VISIBLE }
+            }
+
+            override fun onPageFinished(v: WebView, url: String?) { v.evaluateJavascript(AdBlock.CLEAN_JS, null); v.evaluateJavascript(AdBlock.FS_JS, null) }
         }
 
         web.webChromeClient = object : WebChromeClient() {
@@ -203,7 +219,7 @@ class WebActivity : Activity() {
         if (!ready) return super.dispatchKeyEvent(ev)
         val k = ev.keyCode
         if (k == KeyEvent.KEYCODE_BACK) {
-            if (ev.action == KeyEvent.ACTION_UP) { if (full != null) hideFull() else if (web.canGoBack()) web.goBack() else finish() }
+            if (ev.action == KeyEvent.ACTION_UP) { if (full != null) hideFull() else if (maxed) toggleMax() else if (web.canGoBack()) web.goBack() else finish() }
             return true
         }
         if (k == KeyEvent.KEYCODE_DPAD_UP || k == KeyEvent.KEYCODE_DPAD_DOWN || k == KeyEvent.KEYCODE_DPAD_LEFT || k == KeyEvent.KEYCODE_DPAD_RIGHT) {
@@ -211,7 +227,12 @@ class WebActivity : Activity() {
             return true
         }
         if (k == KeyEvent.KEYCODE_DPAD_CENTER || k == KeyEvent.KEYCODE_ENTER || k == KeyEvent.KEYCODE_NUMPAD_ENTER) {
-            if (ev.action == KeyEvent.ACTION_DOWN && ev.repeatCount == 0) tap()
+            if (ev.action == KeyEvent.ACTION_DOWN && ev.repeatCount == 0) {
+                val now = SystemClock.uptimeMillis()
+                tap()
+                // Doble OK sobre la página = maximizar el video (o volver a lo normal)
+                if (now - lastOk < 500 && (maxed || cy > bar.height)) { toggleMax(); lastOk = 0L } else lastOk = now
+            }
             return true
         }
         return super.dispatchKeyEvent(ev)
@@ -253,6 +274,30 @@ class WebActivity : Activity() {
             root.dispatchTouchEvent(up)
             up.recycle()
         }, 60)
+    }
+
+    private fun toggleMax() {
+        web.evaluateJavascript(AdBlock.MAX_JS) { r ->
+            when ((r ?: "").replace("\"", "")) {
+                "on" -> { maxed = true; bar.visibility = View.GONE; say("Maximizado. Atrás para volver") }
+                "off" -> { maxed = false; bar.visibility = View.VISIBLE }
+                else -> say("No encontré un video en esta página")
+            }
+        }
+    }
+
+    private fun cleanOverlays() {
+        web.evaluateJavascript(AdBlock.CLEAN_OVERLAYS_JS) { r ->
+            val n = (r ?: "0").replace("\"", "").toIntOrNull() ?: 0
+            say(if (n > 0) "Ocultadas $n capas" else "No encontré carteles para ocultar")
+        }
+    }
+
+    // Lista de los servidores que cargó la página; sirve para sumar los de publicidad a la lista de bloqueo.
+    private fun showHosts() {
+        val txt = seen.entries.sortedBy { it.key }.joinToString("\n") { (if (it.value) "[bloqueado] " else "") + it.key }
+        AlertDialog.Builder(this).setTitle("Servidores de esta página").setMessage(if (txt.isBlank()) "Todavía no cargó nada." else txt)
+            .setPositiveButton("Cerrar", null).show()
     }
 
     override fun onResume() { super.onResume(); if (ready) web.onResume() }
